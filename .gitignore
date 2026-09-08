@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+chemdiag.db
+chemdiag.db-journal
+.env
+.DS_Store
+*.log

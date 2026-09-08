@@ -1,0 +1,24 @@
+{
+  "name": "chemdiag-ai",
+  "version": "1.0.0",
+  "description": "Explainable AI-Based Fault Diagnosis and Root-Cause Analysis for Chemical Processes",
+  "type": "module",
+  "scripts": {
+    "dev": "node start_all.js",
+    "start": "node start_all.js",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "setup:backend": "cd backend && npm install",
+    "setup:frontend": "cd frontend && npm install",
+    "setup": "npm run setup:backend && npm run setup:frontend"
+  },
+  "keywords": [
+    "chemical-engineering",
+    "ai",
+    "fault-diagnosis",
+    "esp32",
+    "explainable-ai"
+  ],
+  "author": "ChemDiag AI Team",
+  "license": "MIT"
+}
