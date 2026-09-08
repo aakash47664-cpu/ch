@@ -2,7 +2,14 @@ import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const distPath = path.resolve(__dirname, '../frontend/dist');
 
 import { initDb, recordTelemetry, recordDiagnosis, recordAlert } from './database/db.js';
 import { generateSyntheticDataset, FEATURE_NAMES, CLASSES } from './ai/syntheticData.js';
@@ -90,16 +97,27 @@ app.use('/api', createApiRouter({
   updateLatestDiagnosis
 }));
 
-// Root greeting
-app.get('/', (req, res) => {
-  res.json({
-    name: 'ChemDiag AI Backend',
-    version: '1.0.0',
-    description: 'Explainable AI-Based Fault Diagnosis and Root-Cause Analysis',
-    status: 'ONLINE',
-    docs: '/api/status'
+// 4b. Static Frontend Assets (if built)
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
+      return next();
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
   });
-});
+} else {
+  // Root greeting fallback
+  app.get('/', (req, res) => {
+    res.json({
+      name: 'ChemDiag AI Backend',
+      version: '1.0.0',
+      description: 'Explainable AI-Based Fault Diagnosis and Root-Cause Analysis',
+      status: 'ONLINE',
+      docs: '/api/status'
+    });
+  });
+}
 
 // ----------------------------------------------------
 // 5. WebSocket Connections & Broadcast
