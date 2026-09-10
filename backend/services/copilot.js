@@ -15,10 +15,10 @@
  */
 
 const EQUIPMENT_ALIASES = {
-  pump: ['pump', 'p-101', 'p101', 'centrifugal', 'impeller', 'motor', 'rpm', 'vibration', 'bearing', 'cavitation', 'npsh', 'suction'],
-  heat_exchanger: ['heat exchanger', 'heat-exchanger', 'e-101', 'e-102', 'e101', 'e102', 'hx', 'exchanger', 'delta t', 'fouling', 'cooler', 'condenser', 'heat transfer', 'shell and tube', 'reboiler', 'lmtd', 'ntu'],
-  reactor: ['reactor', 'r-101', 'r-201', 'r101', 'r201', 'cstr', 'pfr', 'vessel', 'jacket', 'runaway', 'exothermic', 'agitator', 'cooling status', 'reaction', 'arrhenius', 'kinetics'],
-  distillation: ['distillation', 'column', 't-101', 't-301', 't101', 't301', 'd-101', 'd101', 'reflux', 'reboiler', 'overhead', 'tray', 'fractionator', 'distillate', 'top temperature', 'bottom temperature', 'flooding', 'weeping', 'mccabe-thiele', 'vle']
+  pump: ['pump', 'p-101', 'p101', 'centrifugal pump'],
+  heat_exchanger: ['heat exchanger', 'heat-exchanger', 'e-101', 'e-102', 'e101', 'e102', 'hx'],
+  reactor: ['reactor', 'r-101', 'r-201', 'r101', 'r201', 'cstr', 'pfr'],
+  distillation: ['distillation', 'distillation column', 't-101', 't-301', 't101', 't301', 'd-101', 'd101', 'fractionator']
 };
 
 const NOMINAL_BASELINES = {
@@ -31,11 +31,23 @@ const NOMINAL_BASELINES = {
 export function getEquipmentContext(query = '', selectedEquipment = null, history = []) {
   const q = query.toLowerCase().trim();
 
+  // If query is about general unmodeled equipment or theoretical concepts, don't force equipment filter
   if (
+    q.includes('compressor') ||
+    q.includes('surge') ||
+    q.includes('turbine') ||
+    q.includes('entropy') ||
+    q.includes('thermodynamics') ||
+    q.includes('pid') ||
     q.includes('compare') ||
     (q.includes('all') && q.includes('equipment')) ||
     (q.includes('process') && (q.includes('summary') || q.includes('status') || q.includes('overview') || q.includes('normal')))
   ) {
+    // Only return equipment if explicitly asking about my specific unit
+    if (q.includes('my heat exchanger') || q.includes('e-101') || q.includes('e101')) return 'heat_exchanger';
+    if (q.includes('my pump') || q.includes('p-101') || q.includes('p101')) return 'pump';
+    if (q.includes('my reactor') || q.includes('r-101') || q.includes('r101')) return 'reactor';
+    if (q.includes('my column') || q.includes('d-101') || q.includes('d101')) return 'distillation';
     return null;
   }
 
@@ -53,6 +65,10 @@ export function getEquipmentContext(query = '', selectedEquipment = null, histor
   if (hasPronounRef && history && history.length > 0) {
     for (let i = history.length - 1; i >= 0; i--) {
       const histText = (history[i].text || history[i].content || history[i].message || '').toLowerCase();
+      // If the immediate preceding turn was about compressors or general theory, don't latch to an old equipment
+      if (histText.includes('compressor') || histText.includes('surge') || histText.includes('entropy')) {
+        return null;
+      }
       for (const [key, aliases] of Object.entries(EQUIPMENT_ALIASES)) {
         if (aliases.some(alias => histText.includes(alias))) {
           return key;
@@ -218,68 +234,129 @@ export function answerProcessQuestion({
   }
 
   // Check recent conversation turns for topic resolution
-  const lastUserTurn = (history || [])
-    .filter(h => h.sender === 'user' || h.role === 'user')
-    .slice(-1)[0]?.text?.toLowerCase() || '';
+  const recentUserTurnsList = (history || [])
+    .filter(h => h.sender === 'user' || h.role === 'user');
+  const lastUserTurnObj = recentUserTurnsList.slice(-1)[0];
+  const lastUserTurn = (lastUserTurnObj?.text || lastUserTurnObj?.content || lastUserTurnObj?.message || '').toLowerCase();
+  const recentUserTurns = recentUserTurnsList
+    .slice(-3)
+    .map(h => (h.text || h.content || h.message || '').toLowerCase())
+    .join(' ');
 
   // =========================================================================
-  // 1. UNIVERSAL INDUSTRIAL KNOWLEDGE: PUMP CAVITATION & NPSH
+  // 1. UNIVERSAL INDUSTRIAL KNOWLEDGE: THERMODYNAMICS & ENTROPY
   // =========================================================================
-  if (lowerQ.includes('cavitation') || (lowerQ.includes('npsh') && !lowerQ.includes('formula'))) {
-    const isAskingAboutMyPump = lowerQ.includes('my pump') || lowerQ.includes('p-101') || lowerQ.includes('p101') || lowerQ.includes('could this be happening') || lowerQ.includes('could my pump');
+  const isEntropyTopic = lowerQ.includes('entropy') || lowerQ.includes('thermodynamics') || lowerQ.includes('second law') || lowerQ.includes('irreversibility') || (recentUserTurns.includes('entropy') && (lowerQ.includes('why') || lowerQ.includes('heat transfer') || lowerQ.includes('exchanger') || lowerQ.includes('increase') || lowerQ.includes('matter')));
 
-    if (isAskingAboutMyPump) {
-      const pFlowVal = (pump.flow ?? 10.0).toFixed(1);
-      const isVibHigh = pump.vibration > 0.20;
+  if (isEntropyTopic) {
+    const isAskingAboutExchanger = lowerQ.includes('heat exchanger') || lowerQ.includes('my heat exchanger') || lowerQ.includes('e-101') || lowerQ.includes('e101') || lowerQ.includes('my process') || lowerQ.includes('matter in my') || lowerQ.includes('affect my') || lowerQ.includes('happening with my heat exchanger') || lowerQ.includes('happening there');
+    const isAskingHeatTransferRel = lowerQ.includes('heat transfer') || lowerQ.includes('related to heat') || lowerQ.includes('transfer');
+    const isAskingWhyIncrease = lowerQ.includes('why does') || lowerQ.includes('why entropy') || lowerQ.includes('increase');
+
+    if (isAskingAboutExchanger) {
+      const isRightNow = lowerQ.includes('right now') || lowerQ.includes('current') || lowerQ.includes('happening there') || lowerQ.includes('happening with');
+      if (isRightNow) {
+        return {
+          success: true,
+          answer: `CURRENT E-101 HEAT EXCHANGER TELEMETRY AUDIT:
+
+1. Live Operating Measurements:
+• Process Inlet Temperature: ${hx.inlet_temperature.toFixed(1)} °C
+• Process Outlet Temperature: ${hx.outlet_temperature.toFixed(1)} °C
+• Temperature Gradient (ΔT): ${hx.temperature_difference.toFixed(1)} °C (Nominal baseline: ~12.9 °C)
+• Heat Transfer Efficiency: ${(hx.efficiency ?? hx.heat_transfer_indicator).toFixed(1)}%
+
+2. Condition Assessment:
+${hx.temperature_difference < 5.0 ? '⚠ Notice: Reduced ΔT indicates boundary scale accumulation, decreasing heat duty throughput and causing thermodynamic performance degradation.' : '✓ E-101 is operating within nominal thermal gradient and baseline entropy generation limits.'}`,
+          equipment: 'heat_exchanger',
+          intent: 'hx_live_status',
+          timestamp
+        };
+      }
+
       return {
         success: true,
-        answer: `PUMP CAVITATION ANALYSIS (FUNDAMENTAL THEORY + LIVE P-101 AUDIT):
+        answer: `ENTROPY & THERMODYNAMICS IN HEAT EXCHANGERS (E-101 AUDIT):
 
-1. Engineering Principle:
-Cavitation occurs when local static pressure at the pump suction falls below the fluid's vapor pressure (P_local < P_sat). Vapor bubbles nucleate at the impeller eye and violently implode in higher-pressure discharge zones, producing localized shockwaves (>1000 bar), micro-jet erosion pitting, acoustic crackle noise, and head/flow degradation.
+1. Thermodynamic Significance:
+In heat exchangers, entropy generation (S_gen) represents the thermodynamic penalty of transferring thermal energy across a finite temperature difference (ΔT) between process streams:
+• S_gen = m_dot_cold * Cp_cold * ln(T_c_out / T_c_in) + m_dot_hot * Cp_hot * ln(T_h_out / T_h_in) >= 0.
+• By the Gouy-Stodola theorem, the rate of lost available work (exergy destruction) is directly proportional to entropy generation: E_destroyed = T0 * S_gen.
 
-2. Live P-101 Telemetry Evaluation:
-• Pump Speed: ${Math.round(pump.rpm)} RPM
-• Casing Vibration: ${pump.vibration.toFixed(2)} g (${isVibHigh ? 'Elevated ↑ — Matches high-frequency cavitation / mechanical defect' : 'Nominal ✓ (<0.15 g)'})
-• Calculated Flow: ${pFlowVal} L/min
-• Fluid Suction Temp: ${pump.inlet_temperature.toFixed(1)} °C
+2. Impact on Industrial Heat Exchangers:
+• High ΔT increases heat transfer rate (Q = U * A * ΔT_lm) but maximizes thermodynamic irreversibility and exergy loss.
+• Tube wall fouling introduces extra thermal resistance, distorting the temperature profile and forcing higher utility steam/cooling water consumption to meet process duty.
 
-3. Inferred Condition & Downstream Propagation:
-${isVibHigh ? 'Active vibration elevation and flow reduction are physically consistent with developing cavitation or bearing wear. Reduced pump discharge directly reduces cooling throughput to E-101 and decreases feed rate to reactor R-101.' : 'P-101 is operating within normal vibration (<0.15 g) and flow parameters; no active cavitation is indicated.'}
+3. Live E-101 Telemetry Context:
+• Operating Gradient (ΔT): ${hx.temperature_difference.toFixed(1)} °C (Nominal: 12.9 °C)
+• Overall Thermal Efficiency: ${(hx.efficiency ?? hx.heat_transfer_indicator).toFixed(1)}%
+${hx.temperature_difference < 5.0 ? '⚠ Notice: Reduced ΔT indicates boundary scale accumulation, decreasing heat duty throughput and causing thermodynamic performance degradation.' : '✓ E-101 is operating within nominal thermal gradient and baseline entropy generation limits.'}`,
+        equipment: 'heat_exchanger',
+        intent: 'entropy_exchanger',
+        timestamp
+      };
+    }
 
-4. Recommended Verification:
-• Check suction line strainer for particulate blockage (increase NPSHa).
-• Verify suction fluid temperature and net positive suction head margin (NPSHa - NPSHr > 0.6 m).
-• Inspect casing with high-frequency acoustic sensor or vibration spectrum FFT.`,
-        equipment: 'pump',
-        intent: 'cavitation_analysis',
+    if (isAskingHeatTransferRel) {
+      return {
+        success: true,
+        answer: `ENTROPY AND ITS RELATIONSHIP TO HEAT TRANSFER:
+
+1. Thermal Irreversibility:
+Heat transfer across a finite temperature difference is one of the most fundamental sources of entropy generation in the universe. When heat quantity Q transfers spontaneously from a hot reservoir at temperature T_hot to a cold reservoir at T_cold (where T_hot > T_cold):
+• Entropy change of hot source: ΔS_hot = -Q / T_hot
+• Entropy change of cold sink: ΔS_cold = +Q / T_cold
+• Net Entropy Generation: S_gen = ΔS_total = Q * (1/T_cold - 1/T_hot) > 0.
+
+2. Why it Matters in Engineering:
+Because T_cold < T_hot, (1/T_cold - 1/T_hot) is always positive. The greater the temperature difference (ΔT) between the two bodies, the greater the rate of entropy production, and the greater the loss of available useful work (exergy destruction). In heat exchanger design, engineers balance heat transfer area (capital cost) against ΔT (thermodynamic entropy loss).`,
+        equipment: 'all',
+        intent: 'entropy_heat_transfer',
+        timestamp
+      };
+    }
+
+    if (isAskingWhyIncrease) {
+      return {
+        success: true,
+        answer: `WHY ENTROPY ALWAYS INCREASES (THE SECOND LAW OF THERMODYNAMICS):
+
+1. Statistical Mechanics & Microstates:
+At the molecular level, entropy (S) is defined by Ludwig Boltzmann's relation:
+S = k_B * ln(Ω)
+Where k_B is Boltzmann's constant and Ω is the number of accessible microscopic configurations (microstates) corresponding to a macroscopic state. Because macroscopic systems contain vast numbers of particles (~10^23), the probability of finding the system in a state with maximum microstates (maximum disorder/dispersal) overwhelmingly approaches 100%.
+
+2. Macroscopic Irreversibility:
+In natural processes, energy spontaneously disperses and degrades in quality:
+• Mechanical friction converts directed kinetic energy into random molecular thermal vibrations.
+• Fluids spontaneously mix down concentration gradients.
+• Heat transfers irreversibly down finite temperature gradients.
+
+All real spontaneous processes generate positive entropy (dS_universe > 0), establishing the arrow of time in physics and chemical engineering.`,
+        equipment: 'all',
+        intent: 'entropy_increase',
         timestamp
       };
     }
 
     return {
       success: true,
-      answer: `PUMP CAVITATION (INDUSTRIAL ENGINEERING PRINCIPLES):
+      answer: `ENTROPY IN THERMODYNAMICS:
 
-1. Definition & Mechanism:
-Cavitation is the rapid formation and catastrophic collapse of vapor cavities within a liquid stream. In centrifugal pumps, when static pressure drops below the fluid vapor pressure (NPSHa < NPSHr), liquid flashes into vapor bubbles at the low-pressure impeller suction eye. As bubbles travel to higher-pressure impeller regions, they violently implode.
+1. Fundamental Meaning:
+In thermodynamics, entropy (S) is a fundamental state property that quantifies the degree of energy dispersion and irreversibility in a physical or chemical system. In simpler terms, while the First Law of Thermodynamics tells us that energy is always conserved, the Second Law tells us that the quality of that energy always degrades during real processes — and entropy measures that degradation.
 
-2. Symptoms in Industrial Plants:
-• Distinctive "pumping gravel / marbles" acoustic noise and broad-band high-frequency vibration.
-• Pitting, sponge-like material loss on the trailing edge of impeller vanes.
-• Drop in developed head (H) and flow rate (Q) on the pump performance curve.
-• Accelerated mechanical seal and bearing race failure.
+2. Classical Thermodynamic Definition:
+Clausius defined entropy through reversible heat exchange:
+dS = (δQ_rev / T)
+For any real, irreversible process, the Clausius inequality dictates:
+dS >= (δQ / T)
+Which leads to the universal statement: dS_system + dS_surroundings >= 0.
 
-3. Key Governing Equation:
-NPSHa = H_atm + H_static - H_fric - H_vap >= NPSHr + Margin (typically 0.6–1.0 m).
-
-4. Corrective Engineering Actions:
-• Increase suction head (elevate supply vessel, maintain liquid level).
-• Lower fluid temperature to reduce vapor pressure (P_sat).
-• Enlarge suction piping diameter and eliminate restrictive fittings/elbows near the suction nozzle.
-• Reduce pump rotational speed (RPM) or install an inducer.`,
-      equipment: 'pump',
-      intent: 'cavitation_explanation',
+3. Engineering Significance in Process Plants:
+In industrial chemical engineering, entropy generation (S_gen) directly equals lost work potential (exergy destruction = T_0 * S_gen). Minimizing entropy generation in heat exchangers, distillation columns, compressors, and reactors is the primary engineering pathway to maximizing energy efficiency and reducing operating costs.`,
+      equipment: 'all',
+      intent: 'entropy_explanation',
       timestamp
     };
   }
@@ -287,8 +364,52 @@ NPSHa = H_atm + H_static - H_fric - H_vap >= NPSHr + Margin (typically 0.6–1.0
   // =========================================================================
   // 2. UNIVERSAL INDUSTRIAL KNOWLEDGE: COMPRESSORS & COMPRESSOR SURGE
   // =========================================================================
-  if (lowerQ.includes('compressor') || lowerQ.includes('surge')) {
+  const isCompressorTopic = lowerQ.includes('compressor') || lowerQ.includes('surge') || (recentUserTurns.includes('surge') && (lowerQ.includes('happen') || lowerQ.includes('monitor') || lowerQ.includes('plant') || lowerQ.includes('industrial') || lowerQ.includes('could that') || lowerQ.includes('what would i need') || lowerQ.includes('how to prevent')));
+
+  if (isCompressorTopic) {
     const isComparingWithCavitation = lowerQ.includes('compare') || lastUserTurn.includes('cavitation');
+    const isPlantOccur = lowerQ.includes('happen in an industrial') || lowerQ.includes('happen in a plant') || lowerQ.includes('could that happen') || lowerQ.includes('industrial plant');
+    const isMonitoring = lowerQ.includes('monitor') || lowerQ.includes('what would i need') || lowerQ.includes('what to monitor');
+
+    if (isMonitoring) {
+      return {
+        success: true,
+        answer: `COMPRESSOR SURGE MONITORING & INSTRUMENTATION:
+
+To detect and prevent aerodynamic compressor surge in an industrial plant, engineers monitor:
+1. Suction Differential Pressure (ΔP): High-speed DP transmitters across a calibrated venturi/orifice to calculate instantaneous volumetric flow.
+2. Compression Pressure Ratio (P_discharge / P_suction): Monitored against the machine's characteristic Surge Limit Line (SLL).
+3. Shaft Radial & Thrust Vibration: Proximity probes and accelerometers detecting blade-pass frequencies and violent axial rotor shuttling.
+4. Fast Temperature Spikes: Suction thermocouples to detect instantaneous gas backflow and re-compression heating.
+5. Anti-Surge Valve Positioner: Verifying high-speed modulation (<1.5s stroke time) to recycle gas through a suction cooler.`,
+        equipment: 'all',
+        intent: 'compressor_monitoring',
+        timestamp
+      };
+    }
+
+    if (isPlantOccur) {
+      return {
+        success: true,
+        answer: `CAN COMPRESSOR SURGE OCCUR IN AN INDUSTRIAL PLANT?
+
+Yes, compressor surge is a well-documented and severe operational risk in industrial chemical, petrochemical, refining, and gas-processing plants:
+
+1. How it Happens in Real Plants:
+• Downstream Blockage: Rapid closure of emergency shutoff valves or catalytic bed fouling spikes discharge pressure.
+• Gas Molecular Weight Shifts: Sudden composition shifts (e.g. hydrogen/methane ratio changes) reduce the compressor's pressure-head capability.
+• Upstream Suction Starvation: Suction strainer clogging or upstream header pressure drop starves flow below the surge limit.
+
+2. Industrial Consequences:
+• Severe axial shaft oscillations that can shatter thrust bearings and destroy dry gas seals within seconds.
+• Potential mechanical clash between rotating impellers and stationary casing diaphragms.
+
+Industrial plants prevent this by installing automated Anti-Surge Control (ASC) systems with dedicated fast-acting recycle loops.`,
+        equipment: 'all',
+        intent: 'compressor_industrial',
+        timestamp
+      };
+    }
 
     return {
       success: true,
@@ -807,24 +928,59 @@ Low reflux combined with elevated top temperature matches column reflux-starvati
   // =========================================================================
   // 14. DEFAULT INTELLIGENT INDUSTRIAL FALLBACK
   // =========================================================================
-  return {
-    success: true,
-    answer: `ChemDiag Industrial AI Telemetry Analysis:
+  const isAskingAboutPlant = (
+    lowerQ.includes('my plant') ||
+    lowerQ.includes('our plant') ||
+    lowerQ.includes('live plant') ||
+    lowerQ.includes('current plant') ||
+    lowerQ.includes('in my plant') ||
+    lowerQ.includes('in the plant right now') ||
+    lowerQ.includes('right now in the plant') ||
+    lowerQ.includes('live process') ||
+    lowerQ.includes('process status') ||
+    lowerQ.includes('plant status') ||
+    lowerQ.includes('what is happening right now') ||
+    lowerQ.includes('what is happening in the plant') ||
+    lowerQ.includes('what is happening in my') ||
+    lowerQ.includes('current process status') ||
+    lowerQ.includes('process summary') ||
+    lowerQ.includes('overall diagnosis')
+  );
 
-1. Current Process State:
-• Active Diagnosis: ${diag.fault} (${diag.severity} Severity)
+  if (isAskingAboutPlant) {
+    return {
+      success: true,
+      answer: `CHEMDIAG LIVE PROCESS STATUS:
+
+1. Process Train Overview:
+• P-101 Pump: ${Math.round(pump.rpm)} RPM, ${pump.vibration.toFixed(2)} g vibration (${(pump.flow ?? 10.0).toFixed(1)} L/min flow)
+• E-101 Heat Exchanger: Inlet ${hx.inlet_temperature.toFixed(1)} °C, Outlet ${hx.outlet_temperature.toFixed(1)} °C (ΔT = ${hx.temperature_difference.toFixed(1)} °C)
+• R-101 Reactor: Core ${reactor.temperature.toFixed(1)} °C, Pressure ${reactor.pressure.toFixed(2)} bar (Cooling: ${reactor.cooling_status === 1 ? 'ON' : 'TRIPPED'})
+• D-101 Distillation: Reflux ${dist.reflux_ratio.toFixed(2)} L/D, Top ${dist.top_temperature.toFixed(1)} °C
+
+2. AI Diagnostic & Safety State:
+• Condition: ${diag.fault} (${diag.severity} Severity)
 • Preventive Risk Score: ${diag.riskScore} / 100 (${diag.riskStage})
 • Safety Gate: ${safety.statusLabel}
+${isAnomaly ? `• Probable Root Cause: ${diag.rootCause}\n• Recommended Action: ${prev.preventiveMeasure || diag.recommendedAction}` : `• Plant Status: All units are operating within nominal baseline parameters.`}`,
+      equipment: detectedEquip || 'all',
+      intent: 'plant_status',
+      timestamp
+    };
+  }
 
-2. Key Sensor Telemetry:
-• P-101 Pump: ${Math.round(pump.rpm)} RPM, ${pump.vibration.toFixed(2)} g vibration
-• E-101 Exchanger: ΔT = ${hx.temperature_difference.toFixed(1)} °C
-• R-101 Reactor: ${reactor.temperature.toFixed(1)} °C, ${reactor.pressure.toFixed(2)} bar, Cooling: ${reactor.cooling_status === 1 ? 'ON' : 'OFF'}
-• D-101 Column: Reflux = ${dist.reflux_ratio.toFixed(2)} L/D, Top = ${dist.top_temperature.toFixed(1)} °C
+  return {
+    success: true,
+    answer: `In chemical and industrial process engineering, this relates to core operating principles, thermodynamics, fluid dynamics, and process control.
 
-${isAnomaly ? `3. Root Cause & Action:\n• Root Cause: ${diag.rootCause}\n• Directive: ${prev.preventiveMeasure || diag.recommendedAction}` : `3. Plant Status: All monitored process equipment is currently operating within nominal baseline parameters.`}`,
-    equipment: detectedEquip || 'all',
-    intent: 'fallback',
+When evaluating equipment design, unit operations, or control loop performance, engineers assess:
+1. Mass & Energy Conservation: Ensuring steady-state mass balances and enthalpy exchange across unit boundaries.
+2. Rate Kinetics & Transport Phenomena: Analyzing heat transfer coefficients, diffusion rates, fluid pressure drops, and reaction equilibrium.
+3. System Safety & Reliability: Ensuring operating envelopes remain well within mechanical, thermal, and design safety margins.
+
+If you would like to analyze how this concept applies specifically to the live ChemDiag process train (P-101, E-101, R-101, D-101), feel free to ask!`,
+    equipment: 'all',
+    intent: 'general_engineering_explanation',
     timestamp
   };
 }
