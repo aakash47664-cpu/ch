@@ -1,3 +1,7 @@
+/**
+ * ChemDiag AI — SQLite Database & Audit Event History
+ */
+
 import sqlite3 from 'sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -28,9 +32,7 @@ export function initDb() {
           source TEXT NOT NULL,
           data TEXT NOT NULL
         )
-      `, (err) => {
-        if (err) console.error('Error creating telemetry table:', err);
-      });
+      `);
 
       // 2. Diagnoses history
       db.run(`
@@ -44,12 +46,16 @@ export function initDb() {
           root_cause TEXT NOT NULL,
           severity TEXT NOT NULL,
           confidence REAL NOT NULL,
+          risk_score INTEGER DEFAULT 0,
+          safety_gate_state TEXT DEFAULT 'NORMAL',
           important_variables TEXT NOT NULL,
-          recommended_action TEXT NOT NULL
+          recommended_action TEXT NOT NULL,
+          operator_decision TEXT DEFAULT 'NONE'
         )
-      `, (err) => {
-        if (err) console.error('Error creating diagnoses table:', err);
-      });
+      `);
+      db.run(`ALTER TABLE diagnoses ADD COLUMN risk_score INTEGER DEFAULT 0`, () => {});
+      db.run(`ALTER TABLE diagnoses ADD COLUMN safety_gate_state TEXT DEFAULT 'NORMAL'`, () => {});
+      db.run(`ALTER TABLE diagnoses ADD COLUMN operator_decision TEXT DEFAULT 'NONE'`, () => {});
 
       // 3. System Alerts
       db.run(`
@@ -60,6 +66,20 @@ export function initDb() {
           fault TEXT NOT NULL,
           root_cause TEXT NOT NULL,
           severity TEXT NOT NULL
+        )
+      `);
+
+      // 4. Operator Audit Approvals
+      db.run(`
+        CREATE TABLE IF NOT EXISTS operator_approvals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          equipment TEXT NOT NULL,
+          fault TEXT NOT NULL,
+          risk_score INTEGER NOT NULL,
+          recommended_measure TEXT NOT NULL,
+          operator_decision TEXT NOT NULL,
+          operator_note TEXT
         )
       `, (err) => {
         if (err) return reject(err);
@@ -87,8 +107,8 @@ export function recordDiagnosis(diag) {
     const timestamp = diag.timestamp || new Date().toISOString();
     const query = `
       INSERT INTO diagnoses (
-        timestamp, equipment, anomaly, fault, probable_fault, root_cause, severity, confidence, important_variables, recommended_action
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        timestamp, equipment, anomaly, fault, probable_fault, root_cause, severity, confidence, risk_score, safety_gate_state, important_variables, recommended_action, operator_decision
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     db.run(query, [
       timestamp,
@@ -99,8 +119,11 @@ export function recordDiagnosis(diag) {
       diag.root_cause,
       diag.severity,
       diag.confidence,
+      diag.preventive?.riskScore ?? 0,
+      diag.safetyGate?.gateState ?? 'NORMAL',
       JSON.stringify(diag.important_variables || []),
-      diag.recommended_action
+      diag.recommended_action,
+      diag.operatorApproval?.approved ? 'APPROVED' : 'PENDING'
     ], function (err) {
       if (err) return reject(err);
       resolve({ id: this.lastID });
@@ -108,7 +131,7 @@ export function recordDiagnosis(diag) {
   });
 }
 
-// Alert insertion with simple anti-spam deduplication (ignore if identical active alert within last 5s)
+// Alert insertion with simple anti-spam deduplication
 let lastAlertCache = { key: '', time: 0 };
 
 export function recordAlert(alert) {
@@ -116,7 +139,7 @@ export function recordAlert(alert) {
     const now = Date.now();
     const alertKey = `${alert.equipment}-${alert.fault}-${alert.severity}`;
     if (lastAlertCache.key === alertKey && now - lastAlertCache.time < 5000) {
-      return resolve(null); // prevent duplicate spamming
+      return resolve(null);
     }
     lastAlertCache = { key: alertKey, time: now };
 
@@ -125,6 +148,21 @@ export function recordAlert(alert) {
     db.run(query, [timestamp, alert.equipment, alert.fault, alert.root_cause, alert.severity], function (err) {
       if (err) return reject(err);
       resolve({ id: this.lastID, timestamp, ...alert });
+    });
+  });
+}
+
+// Operator Approval Record
+export function recordOperatorApproval({ equipment, fault, riskScore, recommendedMeasure, decision = 'APPROVED', note = '' }) {
+  return new Promise((resolve, reject) => {
+    const timestamp = new Date().toISOString();
+    const query = `
+      INSERT INTO operator_approvals (timestamp, equipment, fault, risk_score, recommended_measure, operator_decision, operator_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `;
+    db.run(query, [timestamp, equipment, fault, riskScore, recommendedMeasure, decision, note], function (err) {
+      if (err) return reject(err);
+      resolve({ id: this.lastID, timestamp, decision });
     });
   });
 }
@@ -179,3 +217,14 @@ export function getRecentTelemetry(equipment, limit = 50) {
     });
   });
 }
+
+// Query recent operator approvals
+export function getRecentOperatorApprovals(limit = 10) {
+  return new Promise((resolve, reject) => {
+    db.all(`SELECT * FROM operator_approvals ORDER BY id DESC LIMIT ?`, [limit], (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows || []);
+    });
+  });
+}
+

@@ -1,559 +1,222 @@
+/**
+ * ChemDiag — Advanced Universal Industrial AI Engine
+ * 
+ * ONE Conversational AI Intelligence Layer:
+ * - Powered by Groq Cloud (llama-3.3-70b-versatile) / OpenAI API when configured
+ * - Seamless Universal Industrial Dynamic Reasoning Engine as zero-latency local fallback
+ * - Full awareness of live ChemDiag Digital Twin telemetry (P-101 -> E-101 -> R-101 -> D-101)
+ * - Deep multi-turn context and pronoun resolution
+ * - Strict adherence to deterministic Safety Gate and Human-in-the-Loop Operator Authorization
+ */
+
 import { answerProcessQuestion, getEquipmentContext, compareRecentValues, generateRecommendation, getCurrentDiagnosis } from '../services/copilot.js';
 
 export { answerProcessQuestion, getEquipmentContext, compareRecentValues, generateRecommendation, getCurrentDiagnosis };
 
 /**
- * Main function to process user message with live state context
+ * Main entry point for the Universal Industrial AI
  */
 export async function processAiChat({
   message,
   history = [],
+  conversation = [],
   selectedEquipment = null,
+  equipment = null,
   liveState,
+  processContext = {},
   telemetryHistory = []
 }) {
   const query = (message || '').trim();
+  const effectiveHistory = conversation.length > 0 ? conversation : history;
+  const effectiveEquip = selectedEquipment || equipment;
   const timestamp = new Date().toISOString();
 
-  // Check if external LLM API key is present (optional future LLM support)
-  const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
+  // 1. Check for Groq / OpenAI / AI API Key
+  const groqKey = process.env.GROQ_API_KEY;
+  const altKey = process.env.OPENAI_API_KEY || process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = groqKey || altKey;
 
   if (apiKey) {
     try {
-      const detectedEquip = getEquipmentContext(query, selectedEquipment, history);
-      const llmResponse = await queryExternalLlm({
+      const detectedEquip = getEquipmentContext(query, effectiveEquip, effectiveHistory);
+      const llmResponse = await queryIndustrialLlm({
         apiKey,
-        message,
-        history,
+        isGroq: !!groqKey,
+        message: query,
+        conversation: effectiveHistory,
         detectedEquip,
-        liveState
+        liveState,
+        processContext
       });
-      if (llmResponse) {
+
+      if (llmResponse && llmResponse.length > 20) {
         return {
           success: true,
           answer: llmResponse,
           equipment: detectedEquip || 'all',
-          intent: 'llm_chat',
+          provider: groqKey ? 'groq_industrial_ai' : 'ai_assistant',
           timestamp
         };
       }
     } catch (err) {
-      console.warn('External LLM query failed, falling back to local ChemDiag Copilot engine:', err.message);
+      console.warn('External Industrial LLM query failed, falling back to ChemDiag Universal Industrial Engine:', err.message);
     }
   }
 
-  // Local ChemDiag Chemical Process Copilot Service (100% Local, Offline, No API key needed)
+  // 2. ChemDiag Universal Industrial Dynamic Reasoning Engine (100% Local, Offline, Zero-Latency Fallback)
   return answerProcessQuestion({
-    message,
-    history,
-    selectedEquipment,
+    message: query,
+    history: effectiveHistory,
+    selectedEquipment: effectiveEquip,
     liveState,
     telemetryHistory
   });
 }
 
 /**
- * Local Chemical Process Engineering Reasoning Engine
+ * Builds the comprehensive Universal Industrial Engineering Prompt
  */
-function generateLocalProcessReasoning({ query, lowerQ, detectedEquip, history, liveState }) {
-  const { equipment, diagnosis, activeFault, recentAlerts } = liveState;
-
-  const pump = equipment?.pump?.data || { rpm: 2450, vibration: 0.08, inlet_temperature: 25.2, outlet_temperature: 38.1 };
-  const hx = equipment?.heat_exchanger?.data || { inlet_temperature: 25.2, outlet_temperature: 38.1, temperature_difference: 12.9, heat_transfer_indicator: 95.0 };
-  const reactor = equipment?.reactor?.data || { temperature: 65.0, pressure: 2.05, level: 50.0, agitator_speed: 350, cooling_status: 1 };
-  const dist = equipment?.distillation?.data || { top_temperature: 64.2, bottom_temperature: 98.4, pressure: 1.82, level: 52.0, reflux_ratio: 2.2 };
-
-  const isAnomaly = diagnosis?.anomaly && diagnosis?.severity !== 'NORMAL';
-  const currentSeverity = diagnosis?.severity || 'NORMAL';
-  const currentFault = diagnosis?.probable_fault || diagnosis?.fault || 'Nominal Operation';
-  const currentRootCause = diagnosis?.root_cause || 'All units operating within baseline bounds.';
-  const currentAction = diagnosis?.recommended_action || 'Continue routine monitoring.';
-
-  // Equipment health evaluations
-  const isPumpAbnormal = (pump.vibration || 0) > 0.20 || (pump.rpm || 2450) < 2200;
-  const isHxAbnormal = (hx.temperature_difference || 12.9) < 5.0;
-  const isReactorAbnormal = (reactor.cooling_status === 0) || (reactor.temperature || 65) > 74.0 || (reactor.pressure || 2.05) > 2.50;
-  const isDistAbnormal = (dist.reflux_ratio || 2.2) < 1.1 || (dist.top_temperature || 64) > 78.0;
-
-  // -------------------------------------------------------------
-  // 1. Process Status / Summary
-  // -------------------------------------------------------------
-  if (
-    lowerQ.includes('summary') ||
-    lowerQ.includes('overview') ||
-    lowerQ.includes('process status') ||
-    lowerQ.includes('status of the process') ||
-    lowerQ.includes('status summary') ||
-    (lowerQ.includes('what is happening') && !detectedEquip) ||
-    lowerQ === 'what is wrong?' ||
-    lowerQ === 'what is wrong'
-  ) {
-    if (!isAnomaly) {
-      return {
-        text: `CURRENT PROCESS STATUS: NOMINAL ✓
-
-• Pump (P-101): NORMAL (${Math.round(pump.rpm)} RPM, ${pump.vibration.toFixed(2)} g)
-• Heat Exchanger (E-102): NORMAL (ΔT = ${hx.temperature_difference.toFixed(1)} °C)
-• Reactor (R-201): NORMAL (${reactor.temperature.toFixed(1)} °C, ${reactor.pressure.toFixed(2)} bar, Cooling ON)
-• Distillation (T-301): NORMAL (Reflux = ${dist.reflux_ratio.toFixed(2)}, Top Temp = ${dist.top_temperature.toFixed(1)} °C)
-
-AI Assessment:
-Isolation Forest anomaly score is ${diagnosis?.anomaly_score?.toFixed(3) || '0.180'} (Threshold = 0.58). All 4 physical and simulated process units are operating within nominal boundaries.
-
-Recommendation:
-${currentAction}`,
-        equipment: 'all'
-      };
-    } else {
-      return {
-        text: `CURRENT PROCESS STATUS: FAULT DETECTED ⚠
-
-Active Diagnosis: ${currentFault} (${currentSeverity} SEVERITY)
-Affected Unit: ${diagnosis?.equipment || 'Process Unit'}
-
-Live Equipment Status:
-• Pump (P-101): ${isPumpAbnormal ? 'ABNORMAL ⚠' : 'NORMAL ✓'} (${Math.round(pump.rpm)} RPM, ${pump.vibration.toFixed(2)} g)
-• Heat Exchanger (E-102): ${isHxAbnormal ? 'ABNORMAL ⚠' : 'NORMAL ✓'} (ΔT = ${hx.temperature_difference.toFixed(1)} °C)
-• Reactor (R-201): ${isReactorAbnormal ? 'CRITICAL ALARM 🔴' : 'NORMAL ✓'} (${reactor.temperature.toFixed(1)} °C, ${reactor.pressure.toFixed(2)} bar, Cooling: ${reactor.cooling_status === 1 ? 'ON' : 'OFF'})
-• Distillation (T-301): ${isDistAbnormal ? 'ABNORMAL ⚠' : 'NORMAL ✓'} (Reflux = ${dist.reflux_ratio.toFixed(2)}, Top Temp = ${dist.top_temperature.toFixed(1)} °C)
-
-Probable Root Cause:
-${currentRootCause}
-
-Recommended Operator Action:
-${currentAction}`,
-        equipment: detectedEquip || 'all'
-      };
-    }
-  }
-
-  // -------------------------------------------------------------
-  // 2. Comparison Queries (checked before single equipment)
-  // -------------------------------------------------------------
-  if (lowerQ.includes('compare') || (lowerQ.includes('pump') && lowerQ.includes('reactor'))) {
-    return {
-      text: `PROCESS UNIT HEALTH COMPARISON:
-
-1. Pump (P-101): ${isPumpAbnormal ? 'ABNORMAL ⚠ (Vibration Fault)' : 'HEALTHY ✓ (Nominal)'}
-   • Speed: ${Math.round(pump.rpm)} RPM | Vibration: ${pump.vibration.toFixed(2)} g | Temp: ${pump.outlet_temperature.toFixed(1)} °C
-
-2. Heat Exchanger (E-102): ${isHxAbnormal ? 'ABNORMAL ⚠ (Thermal Fouling)' : 'HEALTHY ✓ (Nominal)'}
-   • ΔT: ${hx.temperature_difference.toFixed(1)} °C | Heat Transfer Efficiency: ${hx.heat_transfer_indicator.toFixed(1)} %
-
-3. Reactor (R-201): ${isReactorAbnormal ? 'CRITICAL 🔴 (Cooling Loss / Runaway Risk)' : 'HEALTHY ✓ (Nominal)'}
-   • Core Temp: ${reactor.temperature.toFixed(1)} °C | Pressure: ${reactor.pressure.toFixed(2)} bar | Cooling: ${reactor.cooling_status === 1 ? 'ON' : 'TRIPPED'}
-
-4. Distillation Column (T-301): ${isDistAbnormal ? 'ABNORMAL ⚠ (Reflux Loss)' : 'HEALTHY ✓ (Nominal)'}
-   • Reflux Ratio: ${dist.reflux_ratio.toFixed(2)} | Top Temp: ${dist.top_temperature.toFixed(1)} °C
-
-Highest Risk Unit: ${isReactorAbnormal ? 'Reactor R-201 (Thermal Runaway Risk)' : isAnomaly ? `${diagnosis?.equipment} (${currentSeverity})` : 'None (All Units Operating Nominally)'}`,
-      equipment: 'all'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 3. Sensor Meaning Queries (checked before single equipment)
-  // -------------------------------------------------------------
-  if (lowerQ.includes('vibration') && (lowerQ.includes('mean') || lowerQ.includes('indicate') || lowerQ.includes('what is'))) {
-    return {
-      text: `Vibration Telemetry (MPU6050 Accelerometer on Pump P-101):
-• Current Value: ${pump.vibration.toFixed(2)} g
-• Nominal Operating Limit: < 0.15 g (ISO 10816 Standard)
-• Mechanical Alarm Threshold: > 0.25 g
-
-Meaning:
-Vibration magnitude measures dynamic casing acceleration. Elevated readings (> 0.20 g) indicate physical unbalance, mechanical bearing race damage, or rotor misalignment on the centrifugal pump.`,
-      equipment: 'pump'
-    };
-  }
-
-  if (lowerQ.includes('delta t') && (lowerQ.includes('mean') || lowerQ.includes('indicate') || lowerQ.includes('what is'))) {
-    return {
-      text: `Thermal Difference ΔT (Heat Exchanger E-102):
-• Current Value: ${hx.temperature_difference.toFixed(1)} °C
-• Nominal Operating Range: 12.0–14.0 °C
-• Fouling Degradation Limit: < 4.0 °C
-
-Meaning:
-ΔT represents the temperature gradient across the heat exchanger boundary. When fouling scale builds up on tube walls, thermal resistance surges, collapsing ΔT and reducing overall heat transfer efficiency.`,
-      equipment: 'heat_exchanger'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 4. Is Process Normal / Nominal Question
-  // -------------------------------------------------------------
-  if (lowerQ.includes('is the process normal') || lowerQ.includes('is everything normal') || lowerQ.includes('is it normal') || lowerQ.includes('is everything ok')) {
-    if (!isAnomaly) {
-      return {
-        text: `Yes, the process is currently operating within NOMINAL parameters.
-
-Live Verification:
-• Pump speed: ${Math.round(pump.rpm)} RPM (Nominal: 2400–2500)
-• Pump vibration: ${pump.vibration.toFixed(2)} g (Nominal: < 0.15 g)
-• Heat exchanger ΔT: ${hx.temperature_difference.toFixed(1)} °C (Nominal: 12–14 °C)
-• Reactor core temp: ${reactor.temperature.toFixed(1)} °C (Nominal: 65 °C)
-• Distillation reflux: ${dist.reflux_ratio.toFixed(2)} (Nominal: 1.8–2.2)
-
-No anomalies detected by Isolation Forest or Random Forest models.`,
-        equipment: 'all'
-      };
-    } else {
-      return {
-        text: `No, the process is currently ABNORMAL.
-
-The AI system has detected a ${currentSeverity} severity fault on ${diagnosis?.equipment || 'the system'}:
-• Diagnosed Fault: ${currentFault}
-• Probable Cause: ${currentRootCause}
-• Operator Directive: ${currentAction}`,
-        equipment: detectedEquip || 'all'
-      };
-    }
-  }
-
-  // -------------------------------------------------------------
-  // 5. Severity / Risk / Danger Questions
-  // -------------------------------------------------------------
-  if (lowerQ.includes('severity') || lowerQ.includes('how serious') || lowerQ.includes('highest risk') || lowerQ.includes('dangerous') || lowerQ.includes('risk')) {
-    if (!isAnomaly) {
-      return {
-        text: `Current process risk is LOW / NORMAL. All monitored variables remain within baseline design tolerances.`,
-        equipment: 'all'
-      };
-    }
-
-    let riskDetails = '';
-    if (currentSeverity === 'CRITICAL') {
-      riskDetails = `The current condition is CRITICAL. The exothermic CSTR reaction temperature (${reactor.temperature.toFixed(1)} °C) and pressure (${reactor.pressure.toFixed(2)} bar) are escalating due to cooling jacket failure (Cooling: OFF). Immediate interlock verification is required to prevent thermal runaway and relief valve discharge.`;
-    } else if (currentSeverity === 'HIGH') {
-      riskDetails = `The severity is HIGH because primary operating parameters on ${diagnosis?.equipment} have breached alarm limits (${diagnosis?.important_variables?.join(', ') || 'significant multivariate deviation'}).`;
-    } else {
-      riskDetails = `The severity is ${currentSeverity}. Process efficiency is degraded but operating variables have not yet breached catastrophic safety limits.`;
-    }
-
-    return {
-      text: `SEVERITY ASSESSMENT: ${currentSeverity}
-
-${riskDetails}
-
-Model Confidence: ${Math.round((diagnosis?.confidence || 0.85) * 100)}%
-
-Immediate Directive:
-${currentAction}`,
-      equipment: detectedEquip || 'all'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 6. Operator Action / Recommendation / Check Questions
-  // -------------------------------------------------------------
-  if (
-    lowerQ.includes('what should i check') ||
-    lowerQ.includes('what to check') ||
-    lowerQ.includes('what should the operator check') ||
-    lowerQ.includes('action') ||
-    lowerQ.includes('recommendation') ||
-    lowerQ.includes('how to fix') ||
-    lowerQ.includes('what should we do')
-  ) {
-    if (!isAnomaly) {
-      return {
-        text: `No corrective operator intervention is currently needed.
-
-Recommended Action:
-• Continue routine supervisory monitoring.
-• Verify physical ESP32 sensor connectivity and steady-state mass/energy balances.`,
-        equipment: 'all'
-      };
-    }
-
-    return {
-      text: `RECOMMENDED OPERATOR ACTION FOR ${diagnosis?.equipment?.toUpperCase() || 'PROCESS UNIT'}:
-
-Priority: ${currentSeverity}
-
-Action Directive:
-${currentAction}
-
-Root Cause Basis:
-${currentRootCause}
-
-Key Sensors to Inspect:
-${(diagnosis?.evidence_cards || []).map(c => `• ${c.label}: Current = ${c.val} (${c.state})`).join('\n') || '• Review active multivariate telemetry on dashboard.'}`,
-      equipment: detectedEquip || 'all'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 7. Why Diagnosis / Explain Fault / Which Variables Changed
-  // -------------------------------------------------------------
-  if (
-    lowerQ.includes('why did you classify') ||
-    lowerQ.includes('why did you diagnose') ||
-    lowerQ.includes('explain the fault') ||
-    lowerQ.includes('which variable') ||
-    lowerQ.includes('which variables') ||
-    lowerQ.includes('why is it abnormal') ||
-    lowerQ.includes('what caused') ||
-    lowerQ === 'why?' ||
-    lowerQ === 'why'
-  ) {
-    if (!isAnomaly && !detectedEquip) {
-      return {
-        text: `The AI classifies the process as NOMINAL because all 9 multivariate sensor features fall within the nominal multidimensional envelope. Isolation Forest anomaly score is ${diagnosis?.anomaly_score?.toFixed(3) || '0.180'} (< 0.58 threshold).`,
-        equipment: 'all'
-      };
-    }
-
-    // If a specific equipment is being asked about or diagnosed
-    const targetEquip = detectedEquip || (isPumpAbnormal ? 'pump' : isHxAbnormal ? 'heat_exchanger' : isReactorAbnormal ? 'reactor' : isDistAbnormal ? 'distillation' : null);
-
-    if (targetEquip === 'pump' || (!targetEquip && currentFault.toLowerCase().includes('pump'))) {
-      return {
-        text: `Pump P-101 Diagnostic Explanation:
-
-Evidence:
-• Casing Vibration: ${pump.vibration.toFixed(2)} g ${pump.vibration > 0.20 ? '↑ HIGH (Nominal < 0.15 g)' : '✓ NORMAL'}
-• Rotational Speed: ${Math.round(pump.rpm)} RPM ${pump.rpm < 2200 ? '↓ REDUCED (Nominal ~2450 RPM)' : '✓ NORMAL'}
-• Discharge Temp: ${pump.outlet_temperature.toFixed(1)} °C
-
-Why AI Diagnosed This:
-Elevated casing vibration accompanied by motor speed reduction matches the pump mechanical-fault signature (ISO 10816 vibration standard).
-
-Probable Root Cause:
-${currentRootCause || 'Bearing raceway degradation, mechanical unbalance, or shaft misalignment.'}
-
-Action:
-Inspect pump mechanical alignment, coupling integrity, and bearing lubrication.`,
-        equipment: 'pump'
-      };
-    }
-
-    if (targetEquip === 'heat_exchanger' || (!targetEquip && currentFault.toLowerCase().includes('heat'))) {
-      return {
-        text: `Heat Exchanger E-102 Diagnostic Explanation:
-
-Evidence:
-• Inlet Temp: ${hx.inlet_temperature.toFixed(1)} °C
-• Outlet Temp: ${hx.outlet_temperature.toFixed(1)} °C
-• Thermal Gradient (ΔT): ${hx.temperature_difference.toFixed(1)} °C ${hx.temperature_difference < 5.0 ? '↓ SEVERELY REDUCED (Nominal 12–14 °C)' : '✓ NORMAL'}
-• Heat Transfer Efficiency: ${hx.heat_transfer_indicator.toFixed(1)} %
-
-Why AI Diagnosed This:
-The collapse in thermal difference (ΔT < 4.0 °C) despite normal fluid flow indicates a severe loss in overall heat transfer coefficient (U).
-
-Probable Root Cause:
-${currentRootCause || 'Internal scale accumulation or boundary fouling layer on exchanger tubes.'}
-
-Action:
-Initiate chemical cleaning / backflush cycle and inspect cooling stream flow.`,
-        equipment: 'heat_exchanger'
-      };
-    }
-
-    if (targetEquip === 'reactor' || (!targetEquip && currentFault.toLowerCase().includes('reactor'))) {
-      return {
-        text: `Reactor R-201 (CSTR) Diagnostic Explanation:
-
-Evidence:
-• Reactor Core Temp: ${reactor.temperature.toFixed(1)} °C ${reactor.temperature > 74.0 ? '↑ HIGH (Nominal 65.0 °C)' : '✓ NORMAL'}
-• Internal Pressure: ${reactor.pressure.toFixed(2)} bar ${reactor.pressure > 2.50 ? '↑ ELEVATED (Nominal 2.05 bar)' : '✓ NORMAL'}
-• Cooling Jacket Interlock: ${reactor.cooling_status === 1 ? 'ON (Active)' : 'TRIPPED / OFF 🔴'}
-• Agitator Speed: ${Math.round(reactor.agitator_speed)} RPM
-
-Why AI Diagnosed This:
-Loss of jacket heat removal (Cooling = 0) causes exothermic Arrhenius reaction runaway, driving vapor pressure upward according to Antoine vapor-liquid equilibria.
-
-Probable Root Cause:
-${currentRootCause || 'Cooling jacket coolant supply failure or control valve interlock trip.'}
-
-Action:
-${currentAction || 'Emergency jacket coolant restoration and initiate automated quench protocol.'}`,
-        equipment: 'reactor'
-      };
-    }
-
-    if (targetEquip === 'distillation' || (!targetEquip && currentFault.toLowerCase().includes('distillation'))) {
-      return {
-        text: `Distillation Column T-301 Diagnostic Explanation:
-
-Evidence:
-• Reflux Ratio (L/D): ${dist.reflux_ratio.toFixed(2)} ${dist.reflux_ratio < 1.1 ? '↓ LOW (Nominal 1.8–2.2)' : '✓ NORMAL'}
-• Top Vapor Temperature: ${dist.top_temperature.toFixed(1)} °C ${dist.top_temperature > 78.0 ? '↑ ELEVATED (Nominal ~76.5 °C)' : '✓ NORMAL'}
-• Column Operating Pressure: ${dist.pressure.toFixed(2)} bar ${dist.pressure > 2.50 ? '↑ ELEVATED (Nominal 2.10 bar)' : '✓ NORMAL'}
-
-Why AI Diagnosed This:
-Depleted reflux flow reduces cold liquid return to upper column trays, allowing heavy vapor fractions to bypass fractionation, driving overhead temperature upward.
-
-Probable Root Cause:
-${currentRootCause || 'Column reflux starvation / reflux pump control valve failure.'}
-
-Action:
-${currentAction || 'Inspect reflux pump, verify reflux control valve position, and check condenser cooling flow.'}`,
-        equipment: 'distillation'
-      };
-    }
-  }
-
-  // -------------------------------------------------------------
-  // 8. Equipment-Specific Query: PUMP (P-101)
-  // -------------------------------------------------------------
-  if (detectedEquip === 'pump' || lowerQ.includes('pump') || lowerQ.includes('p-101') || lowerQ.includes('p101')) {
-    const isFaulty = pump.vibration > 0.20 || pump.rpm < 2200;
-    return {
-      text: `PUMP P-101 (6V Water Demonstrator / Hardware Prototype):
-
-Current Telemetry:
-• Speed: ${Math.round(pump.rpm)} RPM ${pump.rpm < 2200 ? '↓ (Abnormal Slip)' : '✓ (Nominal)'}
-• Casing Vibration: ${pump.vibration.toFixed(2)} g ${pump.vibration > 0.20 ? '↑ (Elevated Acceleration)' : '✓ (Nominal)'}
-• Inlet Temperature: ${pump.inlet_temperature.toFixed(1)} °C
-• Discharge Temperature: ${pump.outlet_temperature.toFixed(1)} °C
-• Data Source: ${equipment?.pump?.source_label || 'DEMO / REAL SENSOR'}
-
-Status: ${isFaulty ? 'ABNORMAL / MECHANICAL FAULT ⚠' : 'NORMAL OPERATION ✓'}
-${isFaulty ? `Probable Cause: Bearing wear, shaft misalignment, or impeller unbalance.\nRecommended Check: Inspect pump mounting, shaft alignment, and bearing lubrication.` : `Operating smoothly within nominal vibration boundary (< 0.15 g).`}`,
-      equipment: 'pump'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 9. Equipment-Specific Query: HEAT EXCHANGER (E-102 / E-101)
-  // -------------------------------------------------------------
-  if (detectedEquip === 'heat_exchanger' || lowerQ.includes('heat exchanger') || lowerQ.includes('e-102') || lowerQ.includes('e-101') || lowerQ.includes('e102') || lowerQ.includes('e101')) {
-    const isFaulty = hx.temperature_difference < 5.0;
-    return {
-      text: `HEAT EXCHANGER E-102 (Counter-Flow Shell & Tube Unit):
-
-Current Telemetry:
-• Stream Inlet Temp: ${hx.inlet_temperature.toFixed(1)} °C
-• Stream Outlet Temp: ${hx.outlet_temperature.toFixed(1)} °C
-• Thermal Gradient (ΔT): ${hx.temperature_difference.toFixed(1)} °C ${isFaulty ? '↓ (Severely Degraded)' : '✓ (Nominal 12–14 °C)'}
-• Heat Transfer Indicator: ${hx.heat_transfer_indicator.toFixed(1)} %
-
-Status: ${isFaulty ? 'ABNORMAL / THERMAL FOULING ⚠' : 'NORMAL OPERATION ✓'}
-${isFaulty ? `Probable Cause: Tube scale fouling or coolant flow reduction creating high boundary thermal resistance.\nRecommended Check: Perform exchanger chemical wash / backflush and inspect coolant circulation pump.` : `Thermal transfer gradient is nominal with healthy heat exchange efficiency.`}`,
-      equipment: 'heat_exchanger'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 10. Equipment-Specific Query: REACTOR (R-201 / R-101 / CSTR)
-  // -------------------------------------------------------------
-  if (detectedEquip === 'reactor' || lowerQ.includes('reactor') || lowerQ.includes('r-201') || lowerQ.includes('r-101') || lowerQ.includes('r201') || lowerQ.includes('r101') || lowerQ.includes('cstr')) {
-    const isFaulty = reactor.cooling_status === 0 || reactor.temperature > 74.0 || reactor.pressure > 2.50;
-    return {
-      text: `REACTOR R-201 (Continuous Stirred-Tank Reactor - CSTR):
-
-Current Telemetry:
-• Reaction Temperature: ${reactor.temperature.toFixed(1)} °C ${reactor.temperature > 74.0 ? '↑ (HIGH ALARM)' : '✓ (Nominal 65.0 °C)'}
-• Vessel Internal Pressure: ${reactor.pressure.toFixed(2)} bar ${reactor.pressure > 2.50 ? '↑ (ELEVATED)' : '✓ (Nominal 2.05 bar)'}
-• Vessel Holdup Level: ${reactor.level.toFixed(1)} %
-• Agitator Speed: ${Math.round(reactor.agitator_speed)} RPM
-• Cooling Jacket Interlock: ${reactor.cooling_status === 1 ? 'ON (1 - Active)' : 'TRIPPED / OFF (0) 🔴'}
-
-Status: ${isFaulty ? 'CRITICAL RUNAWAY RISK 🔴' : 'NORMAL OPERATION ✓'}
-${isFaulty ? `Probable Cause: Loss of cooling jacket heat dissipation triggering exothermic Arrhenius temperature surge and Antoine vapor pressure buildup.\nRecommended Check: Immediately verify jacket coolant valve position, emergency backup coolant pump, and prepare reaction inhibitor/quench.` : `Exothermic heat generation is stably balanced by jacket heat removal.`}`,
-      equipment: 'reactor'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 11. Equipment-Specific Query: DISTILLATION (T-301 / D-101)
-  // -------------------------------------------------------------
-  if (detectedEquip === 'distillation' || lowerQ.includes('distillation') || lowerQ.includes('t-301') || lowerQ.includes('d-101') || lowerQ.includes('t301') || lowerQ.includes('d101') || lowerQ.includes('column')) {
-    const isFaulty = dist.reflux_ratio < 1.1 || dist.top_temperature > 78.0;
-    return {
-      text: `DISTILLATION COLUMN T-301 (Binary Fractionating Unit):
-
-Current Telemetry:
-• Reflux Ratio (L/D): ${dist.reflux_ratio.toFixed(2)} ${dist.reflux_ratio < 1.1 ? '↓ (Reflux Starvation)' : '✓ (Nominal 1.8–2.2)'}
-• Top Vapor Temperature: ${dist.top_temperature.toFixed(1)} °C ${dist.top_temperature > 78.0 ? '↑ (High Overhead Temp)' : '✓ (Nominal 76.5 °C)'}
-• Bottom Reboiler Temp: ${dist.bottom_temperature.toFixed(1)} °C
-• Column Pressure: ${dist.pressure.toFixed(2)} bar
-• Bottom Level: ${dist.level.toFixed(1)} %
-
-Status: ${isFaulty ? 'ABNORMAL / SEPARATION DEGRADATION ⚠' : 'NORMAL OPERATION ✓'}
-${isFaulty ? `Probable Cause: Reflux pump starvation or control valve closure allowing uncondensed heavy vapor to reach the top tray.\nRecommended Check: Check reflux pump motor, reflux flow control valve, and condenser cooling water supply.` : `Tray vapor-liquid equilibria and distillate separation are operating at nominal design specifications.`}`,
-      equipment: 'distillation'
-    };
-  }
-
-  // -------------------------------------------------------------
-  // 12. Default Intelligent Fallback
-  // -------------------------------------------------------------
-  return {
-    text: `ChemDiag AI Telemetry Analysis:
-
-Current Process State:
-• Active Diagnosis: ${currentFault} (${currentSeverity} Severity)
-• Anomaly Status: ${isAnomaly ? 'DETECTED ⚠' : 'NOMINAL ✓'}
-
-Live Sensor Highlights:
-• Pump P-101: ${Math.round(pump.rpm)} RPM, ${pump.vibration.toFixed(2)} g vibration
-• Heat Exchanger E-102: ΔT = ${hx.temperature_difference.toFixed(1)} °C
-• Reactor R-201: ${reactor.temperature.toFixed(1)} °C, ${reactor.pressure.toFixed(2)} bar, Cooling: ${reactor.cooling_status === 1 ? 'ON' : 'OFF'}
-• Distillation T-301: Reflux = ${dist.reflux_ratio.toFixed(2)}, Top Temp = ${dist.top_temperature.toFixed(1)} °C
-
-${isAnomaly ? `Probable Root Cause: ${currentRootCause}\nAction: ${currentAction}` : `All monitored process equipment is currently operating within nominal baseline parameters.`}`,
-    equipment: detectedEquip || 'all'
+function buildIndustrialSystemPrompt(liveState, detectedEquip) {
+  const { equipment = {}, diagnosis = {}, activeFault = 'normal', recentAlerts = [] } = liveState || {};
+
+  const pump = equipment.pump?.data || { rpm: 2450, vibration: 0.08, flow: 10.0, inlet_temperature: 25.2, outlet_temperature: 38.1, source: 'demo' };
+  const hx = equipment.heat_exchanger?.data || { inlet_temperature: 25.2, outlet_temperature: 38.1, temperature_difference: 12.9, heat_transfer_indicator: 95.0, efficiency: 95.0, source: 'demo' };
+  const reactor = equipment.reactor?.data || { temperature: 65.0, pressure: 2.05, level: 50.0, agitator_speed: 350, cooling_status: 1 };
+  const dist = equipment.distillation?.data || { top_temperature: 76.5, bottom_temperature: 98.4, pressure: 2.10, level: 52.0, reflux_ratio: 1.85 };
+
+  const pumpFlow = pump.flow ?? Number(((pump.rpm / 2450) * 10.0).toFixed(1));
+  const isAnomaly = !!(diagnosis.anomaly && diagnosis.severity !== 'NORMAL');
+  const safetyGate = diagnosis.safetyGate || {
+    statusLabel: isAnomaly ? '⚠ OPERATOR APPROVAL REQUIRED' : '✓ NOMINAL OPERATION',
+    safeToRecommend: !diagnosis.is_unknown_fault,
+    actionBlocked: !!diagnosis.is_unknown_fault,
+    headline: isAnomaly ? 'PROCESS ANOMALY DETECTED' : 'SYSTEM OPERATING NOMINALLY',
+    reason: diagnosis.root_cause || 'All variables within baseline bounds.',
+    directive: diagnosis.is_unknown_fault ? '🚨 DO NOT ACT AUTOMATICALLY — additional physical verification is required.' : isAnomaly ? '✓ SAFE TO RECOMMEND — Operator Approval Required.' : '✓ CONTINUE ROUTINE MONITORING.'
   };
+
+  const xaiList = (diagnosis.xai_contributions || [])
+    .map(x => `- ${x.label}: ${x.change} (${x.contributionPercent}% contribution)`)
+    .join('\n');
+
+  return `You are ChemDiag Industrial AI, a world-class industrial chemical process engineer, plant operations consultant, reliability specialist, and control systems expert.
+You possess deep, universal mastery across all industrial engineering disciplines:
+1. FLUID MACHINERY: Centrifugal and positive displacement pumps, cavitation (NPSHa vs NPSHr, bubble collapse damage), impeller wear, recirculation, pump head-capacity curves, axial and centrifugal compressors (surge vs stall, anti-surge recycle valves, stonewall/choke flow), steam and gas turbines, fans, blowers, valves (control valve sizing Cv, linear/equal%/quick-opening trims, cavitation/flashing in valves, valve stiction), piping hydraulics, and water hammer (Joukowsky equation).
+2. HEAT TRANSFER: Shell & tube, plate, double-pipe exchangers, condensers, reboilers (kettle vs thermosiphon), boilers, furnaces, cooling towers (approach, range, wet-bulb), refrigeration cycles, fouling mechanisms (scaling, biological, coking, particulate), LMTD with F-factor correction, overall heat transfer coefficient U, and effectiveness-NTU methods.
+3. REACTION ENGINEERING: CSTR, PFR, batch/semi-batch reactors, catalytic fixed/fluidized beds, Arrhenius kinetics (k = A*exp(-Ea/RT)), exothermic heat generation vs jacket heat removal, thermal runaway dynamics, Semenov explosion limits, conversion, selectivity, yield, and residence time distribution.
+4. SEPARATIONS & MASS TRANSFER: Fractional distillation columns (sieve/valve/bubble-cap trays, structured packing), vapor-liquid equilibria (VLE, Raoult's law, relative volatility, Antoine equation), McCabe-Thiele method, reflux ratio (L/D), minimum reflux Rmin, reboiler/condenser duties, column hydraulic limits (flooding, weeping, entrainment, coning, dumping), absorption, stripping, liquid-liquid extraction, adsorption, membranes, evaporation, and crystallization.
+5. PROCESS CONTROL & AUTOMATION: PID control algorithms (P, I, D actions, proportional band, reset time, derivative time), PID tuning (Ziegler-Nichols, Cohen-Coon, lambda tuning), cascade control, feedforward control, ratio control, split-range control, loop stability, oscillations/hunting, dead time, gain margin, and phase margin.
+6. SENSORS & INSTRUMENTATION: Temperature (RTDs Pt100/Pt1000 3-wire/4-wire, thermocouples Type K/J/T, thermowells), Pressure (piezoresistive, capacitive differential pressure DP transmitters, hydrostatic level), Flow (orifice plates, venturi, vortex, electromagnetic, Coriolis mass flowmeters), Level (guided wave radar, ultrasonic, DP, float), 4-20 mA current loops, HART protocol, sensor drift, and calibration.
+7. INDUSTRIAL SYSTEMS & AUTOMATION: PLC vs DCS architectures, SCADA, HMI, industrial fieldbuses (Modbus RTU/TCP, OPC-UA, Profibus), alarms (EEMUA 191 / ISA-18.2 standards to prevent alarm floods), and safety interlocks (SIS, SIF, SIL 1-4 per IEC 61508 / IEC 61511).
+8. PROCESS SAFETY & RISK: HAZOP methodology & guide words (NO, MORE, LESS, AS WELL AS, PART OF, REVERSE, OTHER THAN), FMEA (Risk Priority Number = Severity * Occurrence * Detection), LOPA independent protection layers, pressure safety relief valves (PSV sizing API 520/521), rupture discs, containment, and runaway reaction quench systems.
+9. RELIABILITY & VIBRATION: Condition-based maintenance (CBM), predictive maintenance (PdM), vibration spectrum analysis (1X running speed = unbalance, 2X = misalignment/looseness, subharmonic = oil whirl, high-frequency = bearing raceway defects BPFO/BPFI), ISO 10816 vibration severity limits, lubrication, cavitation crackle noise, and thermal imaging.
+10. FIRST-PRINCIPLES CALCULATIONS: Mass & energy balances, Bernoulli equation, Darcy-Weisbach head loss, Reynolds number, heat duty Q = m*Cp*dT = U*A*dT_lm, and vapor pressure via Antoine equation.
+
+=======================================================
+LIVE CHEMDIAG PROCESS TELEMETRY & DIGITAL TWIN
+=======================================================
+Process Train: Water Reservoir -> P-101 (Centrifugal Pump) -> E-101 (Heat Exchanger) -> R-101 (CSTR Reactor) -> D-101 (Distillation Column)
+
+Current Live Telemetry:
+- Active Fault State: ${activeFault} (Severity: ${diagnosis.severity || 'NORMAL'})
+- P-101 Pump: Speed = ${Math.round(pump.rpm)} RPM, Casing Vibration = ${pump.vibration.toFixed(2)} g, Calculated Flow = ${pumpFlow.toFixed(1)} L/min, Inlet T = ${pump.inlet_temperature.toFixed(1)} °C, Outlet T = ${pump.outlet_temperature.toFixed(1)} °C (Data Source: ${pump.source === 'real' ? 'REAL HARDWARE SENSORS' : 'DIGITAL TWIN SIMULATED'})
+- E-101 Heat Exchanger: Inlet T = ${hx.inlet_temperature.toFixed(1)} °C, Outlet T = ${hx.outlet_temperature.toFixed(1)} °C, Temperature Difference ΔT = ${hx.temperature_difference.toFixed(1)} °C, Heat Transfer Efficiency = ${(hx.efficiency ?? hx.heat_transfer_indicator).toFixed(1)}%
+- R-101 CSTR Reactor: Core Temp = ${reactor.temperature.toFixed(1)} °C, Vessel Pressure = ${reactor.pressure.toFixed(2)} bar, Agitator Speed = ${Math.round(reactor.agitator_speed)} RPM, Level = ${reactor.level.toFixed(1)}%, Cooling Jacket = ${reactor.cooling_status === 1 ? 'ACTIVE (1 - ON)' : 'TRIPPED (0 - OFF / LOSS OF COOLING)'}
+- D-101 Distillation Column: Top Vapor Temp = ${dist.top_temperature.toFixed(1)} °C, Bottom Reboiler Temp = ${dist.bottom_temperature.toFixed(1)} °C, Column Pressure = ${dist.pressure.toFixed(2)} bar, Reflux Ratio = ${dist.reflux_ratio.toFixed(2)} L/D, Bottom Level = ${dist.level.toFixed(1)}%
+
+AI Diagnostic & Safety State:
+- Anomaly Flag: ${isAnomaly ? 'ABNORMAL (Anomaly Detected)' : 'NOMINAL (Normal Operation)'} (Anomaly Score: ${diagnosis.anomaly_score?.toFixed(3) || '0.180'})
+- Classification: ${diagnosis.probable_fault || 'Nominal Operation'} (Confidence: ${Math.round((diagnosis.confidence || 0.95) * 100)}%)
+- Root Cause: ${diagnosis.root_cause || 'All variables within nominal tolerances.'}
+- Preventive Risk Score: ${diagnosis.preventive?.riskScore ?? 12} / 100 (Stage: ${diagnosis.preventive?.riskStage || 'NORMAL'})
+- Safety Gate State: ${safetyGate.statusLabel}
+- Safety Gate Directive: ${safetyGate.directive}
+- Sensor Reliability: ${diagnosis.sensorReliability?.score ?? 100}% (${diagnosis.sensorReliability?.statusText || 'ALL SENSORS VALID'})
+- Unknown Fault Guard: ${diagnosis.is_unknown_fault ? 'TRIGGERED (Uncharacteristic anomaly pattern - DO NOT ACT)' : 'NORMAL'}
+${xaiList ? `Contributing Variables (XAI Attribution):\n${xaiList}` : ''}
+
+=======================================================
+OPERATIONAL DIRECTIVES FOR YOUR RESPONSES
+=======================================================
+1. ONE UNIFIED AI INTELLIGENCE: You are a single, continuous intelligence. Never speak of separate "modes", "general mode", or "equipment mode".
+2. DYNAMIC CONTEXT BLENDING:
+   - When the user asks a theoretical, general, or educational question (e.g. "What is cavitation?", "Explain distillation column flooding", "How does cascade PID work?"), provide a comprehensive, rigorous, and clear engineering explanation WITHOUT forcing plant data into the answer.
+   - When the user asks about the ChemDiag plant, asks why an equipment unit is behaving abnormally, or asks if a failure mode could be affecting their equipment (e.g. "Could my pump have cavitation?", "Why is my reactor heating up?", "What would happen downstream?"), dynamically connect core engineering theory with the actual live ChemDiag process telemetry above!
+   - For follow-up questions ("Why does it happen?", "How can I detect it?", "Are you sure?", "Explain that simply", "Give me the formula", "Compare that with compressor surge"), maintain seamless multi-turn context and resolve pronouns.
+3. REASONING STRUCTURE: When diagnosing plant behavior, reason through:
+   OBSERVATION -> FIRST DEVIATION -> INTERPRETATION -> POSSIBLE CAUSE -> CAUSE-AND-EFFECT DOWNSTREAM PROPAGATION -> RISK & UNCERTAINTY -> VERIFICATION STEPS -> RECOMMENDED OPERATOR RESPONSE.
+4. ADAPTIVE DEPTH: Naturally adapt to user requests (e.g., simplify for beginners, provide mathematical formulas/derivations, provide industrial case examples, or deliver in-depth troubleshooting).
+5. DETERMINISTIC SAFETY GATE COMPLIANCE:
+   - You are an advisory decision-support assistant; you do NOT directly actuate plant valves or execute automatic control commands.
+   - If the Safety Gate blocks an action: clearly state "🚨 DO NOT ACT AUTOMATICALLY — additional physical verification is required."
+   - If operator approval is required: state that operator authorization is necessary before executing any preventive intervention.
+   - If an unknown fault is active: explain what is abnormal, refuse to force an unsupported classification, and recommend physical sensor/valve inspection.
+6. NO VISIBLE DISCLAIMERS: Do not append generic disclaimer boilerplate or prototype warnings to responses. Give authoritative, technically sound industrial engineering responses.`;
 }
 
 /**
- * External LLM API Query Handler (if configured via env)
+ * Handles LLM API calls with Groq / OpenAI
  */
-async function queryExternalLlm({ apiKey, message, history, detectedEquip, liveState }) {
-  const { equipment, diagnosis, activeFault } = liveState;
-
-  const systemPrompt = `You are ChemDiag AI, an explainable chemical process engineering AI copilot monitoring a live pilot chemical plant.
-You must answer concisely based strictly on the following CURRENT LIVE PROCESS TELEMETRY:
-
-Current Process State:
-- Active Fault Mode: ${activeFault}
-- Overall Diagnosis: ${diagnosis?.probable_fault || 'Nominal'} (Severity: ${diagnosis?.severity || 'NORMAL'}, Confidence: ${Math.round((diagnosis?.confidence || 0.85) * 100)}%)
-- Root Cause: ${diagnosis?.root_cause || 'None'}
-- Recommended Action: ${diagnosis?.recommended_action || 'Continue routine monitoring'}
-
-Live Equipment Telemetry:
-1. Pump (P-101): Speed = ${equipment?.pump?.data?.rpm || 2450} RPM, Vibration = ${equipment?.pump?.data?.vibration || 0.08} g, Inlet Temp = ${equipment?.pump?.data?.inlet_temperature || 25.2} °C, Outlet Temp = ${equipment?.pump?.data?.outlet_temperature || 38.1} °C (Status: ${(equipment?.pump?.data?.vibration || 0) > 0.25 ? 'HIGH VIBRATION FAULT' : 'NORMAL'})
-2. Heat Exchanger (E-102): Inlet Temp = ${equipment?.heat_exchanger?.data?.inlet_temperature || 25.2} °C, Outlet Temp = ${equipment?.heat_exchanger?.data?.outlet_temperature || 38.1} °C, ΔT = ${equipment?.heat_exchanger?.data?.temperature_difference || 12.9} °C (Status: ${(equipment?.heat_exchanger?.data?.temperature_difference || 0) < 4.0 ? 'FOULING DEGRADATION' : 'NORMAL'})
-3. Reactor (R-201 CSTR): Core Temp = ${equipment?.reactor?.data?.temperature || 65.0} °C, Pressure = ${equipment?.reactor?.data?.pressure || 2.05} bar, Agitator = ${equipment?.reactor?.data?.agitator_speed || 350} RPM, Cooling Jacket = ${equipment?.reactor?.data?.cooling_status === 1 ? 'ON (Active)' : 'TRIPPED/OFF (Cooling Loss)'} (Status: ${(equipment?.reactor?.data?.temperature || 0) > 85 || equipment?.reactor?.data?.cooling_status === 0 ? 'CRITICAL RUNAWAY RISK' : 'NORMAL'})
-4. Distillation Column (T-301): Top Temp = ${equipment?.distillation?.data?.top_temperature || 64.2} °C, Bottom Temp = ${equipment?.distillation?.data?.bottom_temperature || 98.4} °C, Pressure = ${equipment?.distillation?.data?.pressure || 1.82} bar, Reflux Ratio = ${equipment?.distillation?.data?.reflux_ratio || 2.2} (Status: ${(equipment?.distillation?.data?.reflux_ratio || 0) < 1.1 ? 'REFLUX STARVATION FAULT' : 'NORMAL'})
-
-Instructions:
-- Keep answers concise, factual, and based on actual numbers above.
-- Structure responses with: ANSWER, EVIDENCE, PROBABLE ROOT CAUSE, and RECOMMENDED ACTION where applicable.
-- Do NOT hallucinate sensor values or conditions.`;
-
-  const url = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1/chat/completions';
+async function queryIndustrialLlm({
+  apiKey,
+  isGroq = true,
+  message,
+  conversation = [],
+  detectedEquip,
+  liveState,
+  processContext
+}) {
+  const systemPrompt = buildIndustrialSystemPrompt(liveState, detectedEquip);
   
-  const formattedHistory = (history || []).slice(-6).map(h => ({
-    role: h.sender === 'ai' ? 'assistant' : 'user',
-    content: h.text
-  }));
+  // Groq API endpoint and model prioritization
+  const baseUrl = process.env.GROQ_API_BASE || process.env.OPENAI_API_BASE || (isGroq ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions');
+  const model = process.env.GROQ_MODEL || process.env.AI_MODEL || (isGroq ? 'llama-3.3-70b-versatile' : 'gpt-4o-mini');
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: process.env.AI_MODEL || 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...formattedHistory,
-        { role: 'user', content: message }
-      ],
-      temperature: 0.2,
-      max_tokens: 450
-    })
-  });
+  // Format recent conversation window (last 10 turns)
+  const formattedHistory = (conversation || [])
+    .slice(-10)
+    .filter(turn => turn && (turn.text || turn.content || turn.message))
+    .map(turn => ({
+      role: (turn.sender === 'ai' || turn.role === 'assistant') ? 'assistant' : 'user',
+      content: String(turn.text || turn.content || turn.message)
+    }));
 
-  if (!response.ok) {
-    throw new Error(`LLM API returned status ${response.status}`);
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...formattedHistory,
+    { role: 'user', content: message }
+  ];
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 14000); // 14-second timeout
+
+  try {
+    const response = await fetch(baseUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.25,
+        max_tokens: 850
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`LLM API returned status ${response.status}: ${errText.slice(0, 150)}`);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content?.trim();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
   }
-
-  const json = await response.json();
-  return json.choices?.[0]?.message?.content?.trim();
 }

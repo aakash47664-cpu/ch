@@ -18,34 +18,36 @@ import {
 interface AiChatPanelProps {
   selectedEquipment?: string;
   onClearSelectedEquipment?: () => void;
+  processContext?: any;
 }
 
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     id: 'init-1',
     sender: 'ai',
-    text: "Hello. I'm monitoring the current ChemDiag process. Ask me about any equipment or abnormal condition.",
+    text: "Hello! I am ChemDiag Industrial AI. Ask me anything about chemical engineering, equipment operations, process thermodynamics, control loops, or live process behavior across P-101, E-101, R-101, and D-101.",
     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    provider: 'local_rule_engine'
+    provider: 'industrial_ai'
   }
 ];
 
 const SUGGESTION_CHIPS = [
-  'Why is it abnormal?',
-  'What is wrong with the pump?',
-  'Which variable changed?',
-  'Why is the reactor temperature increasing?',
-  'What caused the distillation fault?',
-  'What should I check?',
-  'How serious is it?',
-  'Is the process normal?',
-  'Give me a process summary.',
-  'Why did AI detect this fault?'
+  'Why is the pump abnormal?',
+  'Explain pump cavitation & check P-101',
+  'What is compressor surge?',
+  'How does distillation column flooding occur?',
+  'What is cascade PID control?',
+  'Explain reactor thermal runaway kinetics',
+  'What is HAZOP methodology?',
+  'Why did AI detect this fault?',
+  'What will happen next?',
+  'Give me a process summary'
 ];
 
 export const AiChatPanel: React.FC<AiChatPanelProps> = ({
   selectedEquipment,
-  onClearSelectedEquipment
+  onClearSelectedEquipment,
+  processContext
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [inputValue, setInputValue] = useState('');
@@ -84,11 +86,12 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
     setIsLoading(true);
 
     try {
-      const response = await sendAiChatMessage(text, newHistory, selectedEquipment);
+      const response = await sendAiChatMessage(text, newHistory, selectedEquipment, processContext);
+      const replyText = response.response || response.answer || "Operating nominally within design tolerances.";
       const aiMsg: ChatMessage = {
         id: `ai-${Date.now()}`,
         sender: 'ai',
-        text: response.answer,
+        text: replyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         equipment: response.equipment,
         provider: response.provider
@@ -99,7 +102,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
       const errorMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         sender: 'ai',
-        text: "Sorry, I couldn't process that question. Try asking about the current process, a specific equipment unit, or the active fault.",
+        text: "Industrial AI is temporarily reconnecting. Please ask your question again, or verify network connectivity.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -123,41 +126,41 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
   const getPlaceholderText = () => {
     if (selectedEquipment) {
       const name = selectedEquipment === 'pump' ? 'P-101'
-        : selectedEquipment === 'heat_exchanger' ? 'E-102'
-        : selectedEquipment === 'reactor' ? 'R-201'
+        : selectedEquipment === 'heat_exchanger' ? 'E-101'
+        : selectedEquipment === 'reactor' ? 'R-101'
         : selectedEquipment === 'distillation' ? 'D-101'
         : selectedEquipment;
-      return `Ask about ${name} (e.g. "Why is ${name} abnormal?")...`;
+      return `Ask about ${name} or general engineering...`;
     }
-    return "Ask about current process, sensor values, faults, or recommendations...";
+    return "Ask anything about industrial processes...";
   };
 
   return (
-    <div className="ai-chat-container" aria-label="Interactive AI Process Copilot">
+    <div className="ai-chat-container" aria-label="ChemDiag Industrial AI Assistant">
       {/* 1. CHAT HEADER */}
       <div className="chat-header">
         <div className="chat-header-title-group">
           <div className="chat-brain-icon">
-            <Bot size={16} />
+            <BrainCircuit size={17} />
           </div>
           <div>
             <div className="chat-title">
-              ASK CHEMDIAG AI <span className="copilot-tag">COPILOT</span>
+              CHEMDIAG INDUSTRIAL AI <span className="copilot-tag">UNIVERSAL INTELLIGENCE</span>
             </div>
             <p className="chat-subtitle">
-              Ask questions about the current process, equipment, sensor values, faults and recommendations.
+              Intelligent Industrial Process Assistant
             </p>
           </div>
         </div>
 
         <div className="chat-header-actions">
-          {/* AI Copilot Online Status Badge */}
+          {/* AI Online Status Badge */}
           <div
             className="provider-badge rule"
-            title="ChemDiag Local Process AI Copilot is online and monitoring live telemetry"
+            title="ChemDiag Industrial AI is active and monitoring live process telemetry"
           >
             <span className="copilot-online-dot">●</span>
-            <span>AI COPILOT ONLINE</span>
+            <span>INDUSTRIAL AI ONLINE</span>
           </div>
 
           <button
@@ -176,7 +179,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
         <div className="chat-context-banner">
           <span>Active Context: <strong>{selectedEquipment.toUpperCase()}</strong></span>
           <button className="clear-context-btn" onClick={onClearSelectedEquipment}>
-            ✕ Clear Equipment Filter
+            ✕ Clear Equipment Focus
           </button>
         </div>
       )}
@@ -211,7 +214,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
 
             <div className="message-bubble">
               <div className="message-sender-name">
-                {msg.sender === 'user' ? 'Operator' : 'ChemDiag AI Copilot'}
+                {msg.sender === 'user' ? 'Operator' : 'ChemDiag Industrial AI'}
                 <span className="message-timestamp">{msg.timestamp}</span>
               </div>
 
@@ -220,7 +223,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
                   <React.Fragment key={i}>
                     {line.startsWith('•') || line.startsWith('-') ? (
                       <div className="message-bullet-line">{line}</div>
-                    ) : line.startsWith('CURRENT PROCESS STATUS:') || line.startsWith('RECOMMENDED') || line.startsWith('SEVERITY ASSESSMENT:') || line.startsWith('Evidence:') || line.startsWith('Probable Root Cause:') || line.startsWith('Why AI Diagnosed This:') || line.startsWith('Action:') ? (
+                    ) : line.startsWith('CURRENT PROCESS STATUS:') || line.startsWith('RECOMMENDED') || line.startsWith('SEVERITY ASSESSMENT:') || line.startsWith('Evidence:') || line.startsWith('Probable Root Cause:') || line.startsWith('Why AI Diagnosed This:') || line.startsWith('Action:') || line.startsWith('FAULT PROGRESSION') || line.startsWith('WHY DID AI DETECT THIS?') || line.startsWith('PREVENTIVE RISK SCORE:') || line.startsWith('CHEMDIAG DIGITAL TWIN') || line.startsWith('PUMP CAVITATION') || line.startsWith('DYNAMIC COMPRESSORS') || line.startsWith('PROCESS CONTROL') || line.startsWith('DISTILLATION TRAY') || line.startsWith('CHEMICAL REACTOR') || line.startsWith('HEAT EXCHANGER') || line.startsWith('PROCESS SAFETY') ? (
                       <div className="message-section-heading">{line}</div>
                     ) : (
                       <p style={{ margin: line === '' ? '4px 0' : '2px 0' }}>{line}</p>
@@ -240,7 +243,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
             </div>
             <div className="message-bubble loading-bubble">
               <span className="typing-dots"></span>
-              <span className="analyzing-text">AI is analyzing current process data...</span>
+              <span className="analyzing-text">Industrial AI is analyzing process state and engineering principles...</span>
             </div>
           </div>
         )}

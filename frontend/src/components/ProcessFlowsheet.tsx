@@ -643,7 +643,7 @@ export const ProcessFlowsheet: React.FC<ProcessFlowsheetProps> = ({
             onClick={() => onAskAiAbout && onAskAiAbout(selectedEquipment)}
           >
             <MessageSquare size={12} />
-            <span>Ask Copilot About {selectedEquipment.toUpperCase()}</span>
+            <span>Ask AI About {selectedEquipment.toUpperCase()}</span>
           </button>
         </div>
       </div>

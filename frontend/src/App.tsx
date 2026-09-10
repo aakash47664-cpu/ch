@@ -15,7 +15,6 @@ import { AiDiagnosisPanel } from './components/AiDiagnosisPanel';
 import { EquipmentCardsGrid } from './components/EquipmentCard';
 import { LiveCharts } from './components/LiveCharts';
 import { AlertsPanel } from './components/AlertsPanel';
-import { SafetyDisclaimer } from './components/SafetyDisclaimer';
 
 import {
   LayoutDashboard,
@@ -36,6 +35,7 @@ const INITIAL_STATE: ProcessUpdatePayload = {
   type: 'PROCESS_UPDATE',
   timestamp: new Date().toISOString(),
   active_fault_mode: 'normal',
+  fault_severity: 0.0,
   esp32_status: {
     connected: false,
     status: 'ESP32 OFFLINE',
@@ -47,34 +47,35 @@ const INITIAL_STATE: ProcessUpdatePayload = {
       name: 'Pump (6V Mini Centrifugal)',
       source: 'demo',
       source_label: 'DEMO / SIMULATED',
-      data: { rpm: 2450, vibration: 0.08, inlet_temperature: 25.2, outlet_temperature: 38.1 }
+      data: { rpm: 2450, vibration: 0.08, flow: 10.0, inlet_temperature: 25.2, outlet_temperature: 38.1, health: 100 }
     },
     heat_exchanger: {
       id: 'heat_exchanger',
       name: 'Heat Exchanger (Shell & Tube)',
       source: 'demo',
       source_label: 'DEMO / SIMULATED',
-      data: { inlet_temperature: 25.2, outlet_temperature: 38.1, temperature_difference: 12.9, heat_transfer_indicator: 95.0 }
+      data: { inlet_temperature: 25.2, outlet_temperature: 38.1, temperature_difference: 12.9, heat_transfer_indicator: 95.0, efficiency: 95.0, health: 100 }
     },
     reactor: {
       id: 'reactor',
       name: 'Continuous Stirred-Tank Reactor (CSTR)',
       source: 'simulated',
       source_label: 'SIMULATED DATA',
-      data: { temperature: 65.0, pressure: 2.05, level: 50.0, agitator_speed: 350, cooling_status: 1 }
+      data: { temperature: 65.0, pressure: 2.05, level: 50.0, agitator_speed: 350, cooling_status: 1, health: 100 }
     },
     distillation: {
       id: 'distillation',
       name: 'Binary Distillation Column',
       source: 'simulated',
       source_label: 'SIMULATED DATA',
-      data: { top_temperature: 64.2, bottom_temperature: 98.4, pressure: 1.82, level: 52.0, reflux_ratio: 2.2 }
+      data: { top_temperature: 76.5, bottom_temperature: 98.4, pressure: 2.10, level: 52.0, reflux_ratio: 1.85, health: 100 }
     }
   },
   diagnosis: {
     equipment: 'All Units',
     anomaly: false,
     anomaly_score: 0.18,
+    is_unknown_fault: false,
     fault: 'normal',
     probable_fault: 'Nominal Operation',
     root_cause: 'No significant anomaly detected.',
@@ -82,6 +83,11 @@ const INITIAL_STATE: ProcessUpdatePayload = {
     confidence: 0.95,
     important_variables: ['All variables within nominal tolerances'],
     recommended_action: 'Continue routine monitoring. System operating within nominal limits.',
+    xai_contributions: [{ feature: 'nominal', label: 'All variables nominal', change: '✓ Nominal', contributionPercent: 100, isUp: false }],
+    prognosis: { degradationPercent: 0, trend: 'STABLE', riskStage: 'NORMAL', timeToThreshold: 'Operating nominally', narrative: 'Operating nominally' },
+    preventive: { riskScore: 12, riskStage: 'NORMAL', observedEvidence: 'Operating within boundaries', probableCause: 'Nominal', preventiveMeasure: 'Continue routine monitoring', verificationRequired: false, recommendationAllowed: true },
+    safetyGate: { gateState: 'NORMAL', statusLabel: '✓ NOMINAL OPERATION', safeToRecommend: true, actionBlocked: false, requiresOperatorApproval: false, bannerType: 'safe', headline: 'SYSTEM OPERATING NOMINALLY', reason: 'Parameters nominal', directive: '✓ CONTINUE ROUTINE MONITORING' },
+    operatorApproval: { required: false, approved: false, message: 'Nominal operation' },
     timestamp: new Date().toISOString()
   }
 };
@@ -99,12 +105,14 @@ export const App: React.FC = () => {
       time: new Date(Date.now() - (15 - i) * 1000).toLocaleTimeString(),
       pumpVibration: 0.08,
       pumpRpm: 2450,
+      pumpFlow: 10.0,
       hxDeltaT: 12.9,
       hxOutletTemp: 38.1,
       reactorTemp: 65.0,
       reactorPressure: 2.05,
-      distTopTemp: 64.2,
-      distReflux: 2.2
+      distTopTemp: 76.5,
+      distReflux: 1.85,
+      riskScore: 12
     }));
   });
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
@@ -128,12 +136,14 @@ export const App: React.FC = () => {
         time: timeStr,
         pumpVibration: payload.equipment.pump.data.vibration || 0.08,
         pumpRpm: payload.equipment.pump.data.rpm || 2450,
+        pumpFlow: payload.equipment.pump.data.flow || ((payload.equipment.pump.data.rpm / 2450) * 10.0),
         hxDeltaT: payload.equipment.heat_exchanger.data.temperature_difference || 12.5,
         hxOutletTemp: payload.equipment.heat_exchanger.data.outlet_temperature || 38.0,
         reactorTemp: payload.equipment.reactor.data.temperature || 65.0,
         reactorPressure: payload.equipment.reactor.data.pressure || 2.0,
-        distTopTemp: payload.equipment.distillation.data.top_temperature || 64.0,
-        distReflux: payload.equipment.distillation.data.reflux_ratio || 2.2
+        distTopTemp: payload.equipment.distillation.data.top_temperature || 76.5,
+        distReflux: payload.equipment.distillation.data.reflux_ratio || 1.85,
+        riskScore: payload.diagnosis?.preventive?.riskScore ?? 12
       };
 
       setTimeSeries((prev) => {
@@ -177,19 +187,19 @@ export const App: React.FC = () => {
 
   const handleAskAiAboutEquipment = (equipId: string) => {
     setChatEquipment(equipId);
-    // Switch to Overview or AI Diagnosis tab to show the copilot
     if (activeTab !== 'overview' && activeTab !== 'ai_diagnosis') {
       setActiveTab('overview');
     }
   };
 
   // Evaluate equipment health for sidebar dots
-  const pumpIsFault = (state.equipment.pump.data.vibration || 0) > 0.25;
-  const hxIsFault = (state.equipment.heat_exchanger.data.temperature_difference || 0) < 4.0;
+  const pumpIsFault = (state.equipment.pump.data.vibration || 0) > 0.22;
+  const hxIsFault = (state.equipment.heat_exchanger.data.temperature_difference || 0) < 5.0;
   const reactorIsCritical =
-    state.equipment.reactor.data.cooling_status === 0 || (state.equipment.reactor.data.temperature || 0) > 85;
-  const distIsWarning = (state.equipment.distillation.data.reflux_ratio || 0) < 1.1;
+    state.equipment.reactor.data.cooling_status === 0 || (state.equipment.reactor.data.temperature || 0) > 78;
+  const distIsWarning = (state.equipment.distillation.data.reflux_ratio || 0) < 1.15;
   const isAnomaly = state.diagnosis.anomaly && state.diagnosis.severity !== 'NORMAL';
+  const isUnknown = !!state.diagnosis.is_unknown_fault;
 
   return (
     <div className="app-container">
@@ -203,7 +213,7 @@ export const App: React.FC = () => {
             </span>
           </div>
           <p className="brand-subtitle">
-            Explainable AI-Based Fault Diagnosis & Root-Cause Analysis
+            Digital Twin · Early Fault Detection · XAI · Safety Gate
           </p>
         </div>
 
@@ -235,7 +245,7 @@ export const App: React.FC = () => {
           >
             <div className="nav-item-left">
               <Activity />
-              <span>Pump</span>
+              <span>Pump (P-101)</span>
             </div>
             <span className={`nav-status-dot ${pumpIsFault ? 'warning' : 'pulse'}`}></span>
           </button>
@@ -246,7 +256,7 @@ export const App: React.FC = () => {
           >
             <div className="nav-item-left">
               <Flame />
-              <span>Heat Exchanger</span>
+              <span>Heat Exchanger (E-101)</span>
             </div>
             <span className={`nav-status-dot ${hxIsFault ? 'warning' : 'pulse'}`}></span>
           </button>
@@ -257,7 +267,7 @@ export const App: React.FC = () => {
           >
             <div className="nav-item-left">
               <Cpu />
-              <span>Reactor (CSTR)</span>
+              <span>Reactor (R-101 CSTR)</span>
             </div>
             <span className={`nav-status-dot ${reactorIsCritical ? 'critical' : 'pulse'}`}></span>
           </button>
@@ -268,7 +278,7 @@ export const App: React.FC = () => {
           >
             <div className="nav-item-left">
               <Layers />
-              <span>Distillation</span>
+              <span>Distillation (D-101)</span>
             </div>
             <span className={`nav-status-dot ${distIsWarning ? 'warning' : 'pulse'}`}></span>
           </button>
@@ -279,9 +289,9 @@ export const App: React.FC = () => {
           >
             <div className="nav-item-left">
               <BrainCircuit />
-              <span>AI Diagnosis & Chat</span>
+              <span>Industrial AI & Decision</span>
             </div>
-            <span className={`nav-status-dot ${isAnomaly ? 'critical' : 'ai-pulse'}`}></span>
+            <span className={`nav-status-dot ${isUnknown ? 'unknown-dot' : isAnomaly ? 'critical' : 'ai-pulse'}`}></span>
           </button>
 
           <button
@@ -290,7 +300,7 @@ export const App: React.FC = () => {
           >
             <div className="nav-item-left">
               <Bell />
-              <span>Alerts</span>
+              <span>Alerts History</span>
             </div>
             <span className={`nav-alert-badge ${alerts.length === 0 ? 'zero' : ''}`}>
               {alerts.length}
@@ -300,34 +310,34 @@ export const App: React.FC = () => {
 
         {/* SYSTEM STATUS BLOCK */}
         <div className="sidebar-status-block">
-          <span className="status-block-title">Process Telemetry</span>
+          <span className="status-block-title">Process Telemetry & Digital Twin</span>
           <div className="status-item">
-            <span className="status-label">FastAPI Backend</span>
+            <span className="status-label">FastAPI / Node Backend</span>
             <span className="status-val"><span className="status-dot pulse"></span> Online</span>
           </div>
           <div className="status-item">
-            <span className="status-label">SQLite Database</span>
-            <span className="status-val"><span className="status-dot pulse"></span> Synced</span>
-          </div>
-          <div className="status-item">
-            <span className="status-label">ML & AI Copilot</span>
+            <span className="status-label">Safety Gate Engine</span>
             <span className="status-val"><span className="status-dot pulse"></span> Active</span>
           </div>
           <div className="status-item">
-            <span className="status-label">ESP32 Hardware</span>
+            <span className="status-label">XAI & Prognosis</span>
+            <span className="status-val"><span className="status-dot pulse"></span> Synced</span>
+          </div>
+          <div className="status-item">
+            <span className="status-label">ESP32 Transceiver</span>
             <span className={`status-val ${state.esp32_status.connected ? '' : 'offline'}`}>
               <span className="status-dot"></span> {state.esp32_status.connected ? 'Connected' : 'Offline'}
             </span>
           </div>
           <div className="status-item">
-            <span className="status-label">CSTR Simulator</span>
-            <span className="status-val"><span className="status-dot pulse"></span> Running</span>
+            <span className="status-label">Digital Twin Engine</span>
+            <span className="status-val"><span className="status-dot pulse"></span> Continuous</span>
           </div>
         </div>
 
         <div className="sidebar-footer">
-          <span>ChemDiag AI · Industrial Copilot</span>
-          <span style={{ fontFamily: 'var(--font-mono)' }}>v1.0</span>
+          <span>ChemDiag · Industrial AI</span>
+          <span style={{ fontFamily: 'var(--font-mono)' }}>v2.0</span>
         </div>
       </aside>
 
@@ -339,7 +349,7 @@ export const App: React.FC = () => {
         />
 
         <main className="dashboard-canvas">
-          {/* ALWAYS VISIBLE: DEMO MODE FAULT BAR */}
+          {/* ALWAYS VISIBLE: 4-LEVEL DEMO SCENARIOS BAR */}
           <DemoModeBar
             activeFault={state.active_fault_mode}
             onSelectFault={handleSelectFault}
@@ -349,7 +359,7 @@ export const App: React.FC = () => {
           {/* TAB 1: OVERVIEW */}
           {activeTab === 'overview' && (
             <div className="tab-content-anim">
-              {/* ASPEN-STYLE FUNCTIONAL PROCESS FLOWSHEET WITH CAUSE-AND-EFFECT PROPAGATION */}
+              {/* ASPEN PFD WITH CONTINUOUS CAUSAL STREAM PROPAGATION */}
               <ProcessFlowsheet
                 state={state}
                 selectedEquipment={selectedEquipment}
@@ -357,14 +367,14 @@ export const App: React.FC = () => {
                 onAskAiAbout={handleAskAiAboutEquipment}
               />
 
-              {/* CORE USP: PROMINENT AI DIAGNOSIS & INTERACTIVE COPILOT PANEL */}
+              {/* CORE NOVELTY: AI DIAGNOSIS, XAI, PROGNOSIS, PREVENTIVE RISK & SAFETY GATE PANEL */}
               <AiDiagnosisPanel
                 diagnosis={state.diagnosis}
                 equipment={state.equipment}
                 initialChatEquipment={chatEquipment}
               />
 
-              {/* 4 MAIN EQUIPMENT CARDS WITH SPARKLINES & ASK AI BUTTONS */}
+              {/* 4 MAIN EQUIPMENT CARDS */}
               <EquipmentCardsGrid
                 pump={state.equipment.pump}
                 heatExchanger={state.equipment.heat_exchanger}
@@ -374,14 +384,14 @@ export const App: React.FC = () => {
                 onAskAiAbout={handleAskAiAboutEquipment}
               />
 
-              {/* LIVE TIME-SERIES CHARTS */}
+              {/* LIVE TIME-SERIES CHARTS WITH RISK PROGRESSION TIMELINE */}
               <LiveCharts
                 data={timeSeries}
                 selectedEquipment={selectedEquipment}
                 onSelectEquipment={setSelectedEquipment}
               />
 
-              {/* SYSTEM ALERTS LOG */}
+              {/* SYSTEM ALERTS AUDIT LOG */}
               <AlertsPanel alerts={alerts} />
             </div>
           )}
@@ -403,7 +413,7 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 2: PUMP DETAIL */}
+          {/* TAB 3: PUMP DETAIL */}
           {activeTab === 'pump' && (
             <div className="tab-content-anim">
               <div className="equipment-card">
@@ -413,9 +423,9 @@ export const App: React.FC = () => {
                       <Activity size={16} />
                     </div>
                     <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>PUMP DETAIL — 6V WATER DEMONSTRATOR</h2>
+                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>PUMP DETAIL — CENTRIFUGAL UNIT P-101</h2>
                       <p className="unit-id">
-                        Physical Hardware Prototype Monitoring (ESP32 Pins: GPIO 4, 5, 21, 22, 18)
+                        Hardware Interface / Digital Twin Continuous Model (Sensors: Speed, MPU6050 Acceleration, Dual DS18B20 Probes)
                       </p>
                     </div>
                   </div>
@@ -428,39 +438,42 @@ export const App: React.FC = () => {
                       onClick={() => handleAskAiAboutEquipment('pump')}
                     >
                       <MessageSquare size={11} />
-                      <span>Ask AI Copilot</span>
+                      <span>Ask Industrial AI</span>
                     </button>
                   </div>
                 </div>
 
                 <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
                   <div className="metric-row">
-                    <span className="metric-label">Rotational Speed (IR Optical Sensor GPIO 18)</span>
-                    <span className="metric-value">{Math.round(state.equipment.pump.data.rpm)} RPM</span>
+                    <span className="metric-label">Rotational Speed (IR Optical Sensor)</span>
+                    <span className="metric-value numeric-data">{Math.round(state.equipment.pump.data.rpm)} RPM</span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Casing Vibration Magnitude (MPU6050 Accelerometer)</span>
-                    <span className="metric-value" style={{ color: pumpIsFault ? 'var(--sev-critical-text)' : 'inherit' }}>
+                    <span className="metric-value numeric-data" style={{ color: pumpIsFault ? 'var(--sev-critical-text)' : 'inherit' }}>
                       {state.equipment.pump.data.vibration.toFixed(2)} g
                     </span>
                   </div>
                   <div className="metric-row">
-                    <span className="metric-label">Inlet Fluid Temperature (DS18B20 on GPIO 4)</span>
-                    <span className="metric-value">{state.equipment.pump.data.inlet_temperature.toFixed(1)} °C</span>
+                    <span className="metric-label">Calculated Discharge Flow</span>
+                    <span className="metric-value numeric-data">{(state.equipment.pump.data.flow ?? 10.0).toFixed(1)} L/min</span>
                   </div>
                   <div className="metric-row">
-                    <span className="metric-label">Discharge Fluid Temperature (DS18B20 on GPIO 5)</span>
-                    <span className="metric-value">{state.equipment.pump.data.outlet_temperature.toFixed(1)} °C</span>
+                    <span className="metric-label">Inlet Fluid Temperature</span>
+                    <span className="metric-value numeric-data">{state.equipment.pump.data.inlet_temperature.toFixed(1)} °C</span>
+                  </div>
+                  <div className="metric-row">
+                    <span className="metric-label">Discharge Fluid Temperature</span>
+                    <span className="metric-value numeric-data">{state.equipment.pump.data.outlet_temperature.toFixed(1)} °C</span>
                   </div>
                 </div>
 
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '4px' }}>
+                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
                   <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Process Engineering Diagnostic Heuristic
+                    Operating Limits & Vibration Boundaries
                   </h4>
                   <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Healthy centrifugal pumps maintain stable speed (2400–2500 RPM) and low casing acceleration (&lt; 0.15 g).
-                    Impeller imbalance or bearing raceway wear produces elevated vibration (&gt; 0.25 g) accompanied by motor slip or speed oscillations.
+                    Normal: 2300–2600 RPM, &lt;0.20 g vibration, 8–11 L/min flow. Early warning: 0.20–0.30 g vibration. Developing: 0.30–0.40 g. High risk: 0.40–0.50 g. Critical: &gt;0.50 g.
                   </p>
                 </div>
               </div>
@@ -473,7 +486,7 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 3: HEAT EXCHANGER DETAIL */}
+          {/* TAB 4: HEAT EXCHANGER DETAIL */}
           {activeTab === 'heat_exchanger' && (
             <div className="tab-content-anim">
               <div className="equipment-card">
@@ -483,7 +496,7 @@ export const App: React.FC = () => {
                       <Flame size={16} />
                     </div>
                     <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>HEAT EXCHANGER DETAIL — COUNTER-FLOW UNIT</h2>
+                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>HEAT EXCHANGER DETAIL — COUNTER-FLOW UNIT E-101</h2>
                       <p className="unit-id">
                         Thermal transfer gradient monitored via dual DS18B20 digital temperature sensors
                       </p>
@@ -498,7 +511,7 @@ export const App: React.FC = () => {
                       onClick={() => handleAskAiAboutEquipment('heat_exchanger')}
                     >
                       <MessageSquare size={11} />
-                      <span>Ask AI Copilot</span>
+                      <span>Ask Industrial AI</span>
                     </button>
                   </div>
                 </div>
@@ -506,31 +519,30 @@ export const App: React.FC = () => {
                 <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
                   <div className="metric-row">
                     <span className="metric-label">Process Stream Inlet Temperature</span>
-                    <span className="metric-value">{state.equipment.heat_exchanger.data.inlet_temperature.toFixed(1)} °C</span>
+                    <span className="metric-value numeric-data">{state.equipment.heat_exchanger.data.inlet_temperature.toFixed(1)} °C</span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Process Stream Outlet Temperature</span>
-                    <span className="metric-value">{state.equipment.heat_exchanger.data.outlet_temperature.toFixed(1)} °C</span>
+                    <span className="metric-value numeric-data">{state.equipment.heat_exchanger.data.outlet_temperature.toFixed(1)} °C</span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Thermal Difference (ΔT Gradient)</span>
-                    <span className="metric-value" style={{ color: hxIsFault ? 'var(--sev-critical-text)' : 'var(--sev-normal-text)' }}>
+                    <span className="metric-value numeric-data" style={{ color: hxIsFault ? 'var(--sev-critical-text)' : 'var(--sev-normal-text)' }}>
                       {state.equipment.heat_exchanger.data.temperature_difference.toFixed(1)} °C
                     </span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Heat Transfer Overall Efficiency</span>
-                    <span className="metric-value">{state.equipment.heat_exchanger.data.heat_transfer_indicator.toFixed(1)} %</span>
+                    <span className="metric-value numeric-data">{(state.equipment.heat_exchanger.data.efficiency ?? state.equipment.heat_exchanger.data.heat_transfer_indicator).toFixed(1)} %</span>
                   </div>
                 </div>
 
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '4px' }}>
+                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
                   <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Thermal Fouling & Boundary Resistance
+                    Thermal Fouling Factor & Progressive Limits
                   </h4>
                   <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Nominal heat transfer achieves ΔT ≈ 12–14°C. When scale fouling accumulates or coolant circulation decreases,
-                    heat transfer resistance surges, reducing ΔT below 4.0°C and triggering a fouling degradation diagnosis.
+                    Normal: ΔT ≈ 6–10°C (Eff &gt;75%). Early fouling: ΔT = 4–6°C (Eff 60–75%). Developing: ΔT = 3–4°C (Eff 50–60%). High risk: ΔT = 2–3°C (Eff 40–50%). Critical: ΔT &lt; 2°C (Eff &lt;40%).
                   </p>
                 </div>
               </div>
@@ -543,7 +555,7 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 4: REACTOR DETAIL */}
+          {/* TAB 5: REACTOR DETAIL */}
           {activeTab === 'reactor' && (
             <div className="tab-content-anim">
               <div className="equipment-card">
@@ -553,9 +565,9 @@ export const App: React.FC = () => {
                       <Cpu size={16} />
                     </div>
                     <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>REACTOR DETAIL — CONTINUOUS CSTR SIMULATION</h2>
+                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>REACTOR DETAIL — CONTINUOUS CSTR R-101</h2>
                       <p className="unit-id">
-                        Coupled exothermic kinetics, vapor pressure accumulation, and jacket heat dissipation
+                        Coupled exothermic Arrhenius kinetics, vapor pressure accumulation, and jacket heat dissipation
                       </p>
                     </div>
                   </div>
@@ -566,47 +578,46 @@ export const App: React.FC = () => {
                       onClick={() => handleAskAiAboutEquipment('reactor')}
                     >
                       <MessageSquare size={11} />
-                      <span>Ask AI Copilot</span>
+                      <span>Ask Industrial AI</span>
                     </button>
                   </div>
                 </div>
 
                 <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
                   <div className="metric-row">
-                    <span className="metric-label">Reaction Temperature</span>
-                    <span className="metric-value" style={{ color: state.equipment.reactor.data.temperature > 85 ? 'var(--sev-critical-text)' : 'inherit' }}>
+                    <span className="metric-label">Reaction Core Temperature</span>
+                    <span className="metric-value numeric-data" style={{ color: state.equipment.reactor.data.temperature > 80 ? 'var(--sev-critical-text)' : 'inherit' }}>
                       {state.equipment.reactor.data.temperature.toFixed(1)} °C
                     </span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Internal Vessel Pressure</span>
-                    <span className="metric-value" style={{ color: state.equipment.reactor.data.pressure > 3.0 ? 'var(--sev-critical-text)' : 'inherit' }}>
+                    <span className="metric-value numeric-data" style={{ color: state.equipment.reactor.data.pressure > 2.8 ? 'var(--sev-critical-text)' : 'inherit' }}>
                       {state.equipment.reactor.data.pressure.toFixed(2)} bar
                     </span>
                   </div>
                   <div className="metric-row">
-                    <span className="metric-label">Liquid Vessel Holdup Level</span>
-                    <span className="metric-value">{state.equipment.reactor.data.level.toFixed(1)} %</span>
+                    <span className="metric-label">Vessel Holdup Level</span>
+                    <span className="metric-value numeric-data">{state.equipment.reactor.data.level.toFixed(1)} %</span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Agitator Shaft Speed</span>
-                    <span className="metric-value">{Math.round(state.equipment.reactor.data.agitator_speed)} RPM</span>
+                    <span className="metric-value numeric-data">{Math.round(state.equipment.reactor.data.agitator_speed)} RPM</span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Cooling Jacket Relay Interlock</span>
-                    <span className="metric-value" style={{ color: state.equipment.reactor.data.cooling_status === 1 ? 'var(--sev-normal-text)' : 'var(--sev-critical-text)' }}>
-                      {state.equipment.reactor.data.cooling_status === 1 ? 'ON (Active Circulation)' : 'TRIPPED (Cooling Loss Alarm)'}
+                    <span className="metric-value numeric-data" style={{ color: state.equipment.reactor.data.cooling_status === 1 ? 'var(--sev-normal-text)' : 'var(--sev-critical-text)' }}>
+                      {state.equipment.reactor.data.cooling_status === 1 ? 'ACTIVE (1)' : 'TRIPPED (0 - Loss of Cooling)'}
                     </span>
                   </div>
                 </div>
 
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '4px' }}>
+                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
                   <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Coupled Reaction Differential Equations
+                    Exothermic Kinetics & Progressive Limits
                   </h4>
                   <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Exothermic chemical reaction rate increases exponentially with temperature according to the Arrhenius relation.
-                    Cooling jacket trip causes rapid runaway, elevating vapor pressure according to Antoine equilibria into critical alarm status.
+                    Normal: 60–75°C, 1.8–2.3 bar, Level 50–80%, Agitator 250–350 RPM. Progressive degradation: 65°C → 70°C → 76°C → 82°C → 88°C → 92°C. Pressure escalates according to Antoine vapor-liquid equilibria.
                   </p>
                 </div>
               </div>
@@ -619,7 +630,7 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 5: DISTILLATION DETAIL */}
+          {/* TAB 6: DISTILLATION DETAIL */}
           {activeTab === 'distillation' && (
             <div className="tab-content-anim">
               <div className="equipment-card">
@@ -629,7 +640,7 @@ export const App: React.FC = () => {
                       <Layers size={16} />
                     </div>
                     <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>DISTILLATION COLUMN — BINARY FRACTIONATOR</h2>
+                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>DISTILLATION COLUMN — BINARY FRACTIONATOR D-101</h2>
                       <p className="unit-id">
                         Tray vapor-liquid equilibria, reflux ratio dynamics, and overhead distillate separation
                       </p>
@@ -642,41 +653,40 @@ export const App: React.FC = () => {
                       onClick={() => handleAskAiAboutEquipment('distillation')}
                     >
                       <MessageSquare size={11} />
-                      <span>Ask AI Copilot</span>
+                      <span>Ask Industrial AI</span>
                     </button>
                   </div>
                 </div>
 
                 <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
                   <div className="metric-row">
+                    <span className="metric-label">Reflux Ratio (L/D)</span>
+                    <span className="metric-value numeric-data" style={{ color: distIsWarning ? 'var(--sev-medium-text)' : 'var(--sev-normal-text)' }}>
+                      {state.equipment.distillation.data.reflux_ratio.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="metric-row">
                     <span className="metric-label">Top Overhead Vapor Temperature</span>
-                    <span className="metric-value" style={{ color: state.equipment.distillation.data.top_temperature > 78 ? 'var(--sev-critical-text)' : 'inherit' }}>
+                    <span className="metric-value numeric-data" style={{ color: state.equipment.distillation.data.top_temperature > 80 ? 'var(--sev-critical-text)' : 'inherit' }}>
                       {state.equipment.distillation.data.top_temperature.toFixed(1)} °C
                     </span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Bottom Reboiler Temperature</span>
-                    <span className="metric-value">{state.equipment.distillation.data.bottom_temperature.toFixed(1)} °C</span>
+                    <span className="metric-value numeric-data">{state.equipment.distillation.data.bottom_temperature.toFixed(1)} °C</span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Column Operating Pressure</span>
-                    <span className="metric-value">{state.equipment.distillation.data.pressure.toFixed(2)} bar</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Reflux Ratio (L/D)</span>
-                    <span className="metric-value" style={{ color: distIsWarning ? 'var(--sev-medium-text)' : 'var(--sev-normal-text)' }}>
-                      {state.equipment.distillation.data.reflux_ratio.toFixed(2)}
-                    </span>
+                    <span className="metric-value numeric-data">{state.equipment.distillation.data.pressure.toFixed(2)} bar</span>
                   </div>
                 </div>
 
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '4px' }}>
+                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
                   <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Reflux Ratio Dynamics & Column Separation
+                    Reflux Ratio Decay & Progressive Limits
                   </h4>
                   <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Reflux ratio controls the liquid wash returned to upper column trays. When reflux drops below 1.1,
-                    uncondensed heavy vapor reaches the condenser, causing top temperature to rise and separation efficiency to degrade.
+                    Normal: Reflux 1.5–2.2, Top Temp 74–80°C, Bottom Temp 105–120°C, Pressure 1.8–2.3 bar. Progressive reflux degradation: 1.84 → 1.50 → 1.20 → 0.90 → 0.65.
                   </p>
                 </div>
               </div>
@@ -689,7 +699,7 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 6: AI DIAGNOSIS & INTERACTIVE COPILOT DEEP DIVE */}
+          {/* TAB 7: AI DECISION & GROUNDED COPILOT */}
           {activeTab === 'ai_diagnosis' && (
             <div className="tab-content-anim">
               <AiDiagnosisPanel
@@ -697,46 +707,15 @@ export const App: React.FC = () => {
                 equipment={state.equipment}
                 initialChatEquipment={chatEquipment}
               />
-
-              <div className="charts-section">
-                <h3 className="section-title">HYBRID AI ARCHITECTURE & EXPLAINABILITY PIPELINE</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', marginTop: '6px' }}>
-                  <div className="normal-card">
-                    <span className="step-label" style={{ color: 'var(--primary-blue)' }}>Step 1: Isolation Forest</span>
-                    <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.35' }}>
-                      Constructs randomized isolation trees across 9 normalized continuous process features.
-                      Computes anomaly score: <strong style={{ fontFamily: 'var(--font-mono)' }}>{state.diagnosis.anomaly_score?.toFixed(3) || '0.180'}</strong> (Threshold = 0.58).
-                    </p>
-                  </div>
-
-                  <div className="normal-card">
-                    <span className="step-label" style={{ color: 'var(--ai-cyan-hover)' }}>Step 2: Random Forest</span>
-                    <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.35' }}>
-                      Ensemble of decision trees trained on synthetic chemical engineering correlations.
-                      Predicted class: <strong>{state.diagnosis.fault}</strong> with <strong style={{ fontFamily: 'var(--font-mono)' }}>{Math.round(state.diagnosis.confidence * 100)}%</strong> ensemble confidence.
-                    </p>
-                  </div>
-
-                  <div className="normal-card">
-                    <span className="step-label" style={{ color: 'var(--sev-normal-text)' }}>Step 3: Engineering Rules & Copilot</span>
-                    <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.35' }}>
-                      Validates ML predictions against first-principles chemical engineering heuristics and answers interactive operator Q&A grounded on live telemetry.
-                    </p>
-                  </div>
-                </div>
-              </div>
             </div>
           )}
 
-          {/* TAB 7: ALERTS */}
+          {/* TAB 8: ALERTS AUDIT LOG */}
           {activeTab === 'alerts' && (
             <div className="tab-content-anim">
               <AlertsPanel alerts={alerts} />
             </div>
           )}
-
-          {/* ALWAYS VISIBLE: SAFETY DISCLAIMER */}
-          <SafetyDisclaimer />
         </main>
       </div>
     </div>

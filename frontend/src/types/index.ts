@@ -3,21 +3,89 @@ export type SourceType = 'real' | 'demo' | 'simulated';
 export type SeverityLevel = 'NORMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 export type FaultMode = 
-  | 'normal' 
+  | 'normal'
+  | 'early_pump_degradation'
+  | 'early_heat_exchanger_fouling'
+  | 'early_reactor_cooling_degradation'
+  | 'early_distillation_reflux_loss'
   | 'pump_fault' 
   | 'heat_exchanger_fault' 
   | 'reactor_cooling_failure' 
-  | 'distillation_fault';
+  | 'distillation_fault'
+  | 'unknown_fault';
+
+export interface XaiContributionItem {
+  feature: string;
+  label: string;
+  change: string;
+  contributionPercent: number;
+  isUp: boolean;
+  zScore?: number;
+}
+
+export interface PrognosisData {
+  degradationPercent: number;
+  trend: string;
+  riskStage: string;
+  timeToThreshold: string;
+  narrative: string;
+  isEarlyWarning?: boolean;
+  isCritical?: boolean;
+}
+
+export interface PreventiveData {
+  riskScore: number;
+  riskStage: string;
+  observedEvidence: string;
+  probableCause: string;
+  preventiveMeasure: string;
+  verificationRequired: boolean;
+  recommendationAllowed: boolean;
+  reason?: string;
+}
+
+export interface SensorReliabilityData {
+  score: number;
+  isReliable: boolean;
+  statusText: string;
+  details: Array<{
+    name: string;
+    ok: boolean;
+    status: string;
+    note: string;
+  }>;
+}
+
+export interface SafetyGateData {
+  gateState: string;
+  statusLabel: string;
+  safeToRecommend: boolean;
+  actionBlocked: boolean;
+  requiresOperatorApproval: boolean;
+  bannerType: 'safe' | 'blocked' | 'warning' | 'critical' | 'unknown';
+  headline: string;
+  reason: string;
+  directive: string;
+}
+
+export interface OperatorApprovalData {
+  required: boolean;
+  approved: boolean;
+  message: string;
+  approvedAt?: string;
+}
 
 export interface Diagnosis {
   equipment: string;
   anomaly: boolean;
   anomaly_score?: number;
+  is_unknown_fault?: boolean;
   fault: string;
   probable_fault: string;
   root_cause: string;
   severity: SeverityLevel;
   confidence: number;
+  pattern_match_quality?: string;
   important_variables: string[];
   evidence_cards?: Array<{ label: string; val: string; state: string; isWarning: boolean }>;
   pattern_narrative?: string;
@@ -28,6 +96,12 @@ export interface Diagnosis {
   ai_reasoning?: string;
   normal_variables?: Array<{ name: string; val: string; status: string }>;
   recommended_action: string;
+  xai_contributions?: XaiContributionItem[];
+  prognosis?: PrognosisData;
+  preventive?: PreventiveData;
+  sensorReliability?: SensorReliabilityData;
+  safetyGate?: SafetyGateData;
+  operatorApproval?: OperatorApprovalData;
   timestamp: string;
 }
 
@@ -77,6 +151,7 @@ export interface PumpData {
   outlet_temperature: number;
   pressure?: number; // bar
   status?: string;
+  health?: number;
   source?: SourceType;
 }
 
@@ -87,6 +162,7 @@ export interface HeatExchangerData {
   heat_transfer_indicator: number;
   efficiency?: number; // %
   status?: string;
+  health?: number;
   source?: SourceType;
 }
 
@@ -99,6 +175,7 @@ export interface ReactorData {
   feed_flow?: number;
   feed_temperature?: number;
   status?: string;
+  health?: number;
 }
 
 export interface DistillationData {
@@ -113,6 +190,7 @@ export interface DistillationData {
   reflux_flow?: number;
   bottoms_flow?: number;
   status?: string;
+  health?: number;
 }
 
 export interface EquipmentItem<T> {
@@ -127,6 +205,7 @@ export interface ProcessUpdatePayload {
   type: string;
   timestamp: string;
   active_fault_mode: FaultMode;
+  fault_severity?: number;
   esp32_status: {
     connected: boolean;
     status: string;
@@ -154,6 +233,7 @@ export interface TimeSeriesPoint {
   reactorPressure: number;
   distTopTemp: number;
   distReflux: number;
+  riskScore?: number;
 }
 
 export interface ChatMessage {
@@ -162,14 +242,17 @@ export interface ChatMessage {
   text: string;
   timestamp: string;
   equipment?: string;
-  provider?: 'ai_assistant' | 'local_rule_engine';
+  provider?: 'ai_assistant' | 'local_rule_engine' | 'groq_industrial_ai' | 'industrial_ai' | string;
   evidence?: Array<{ label: string; val: string; state: string }>;
 }
 
 export interface ChatResponse {
-  answer: string;
-  equipment: string;
+  success?: boolean;
+  response?: string;
+  answer?: string;
+  equipment?: string;
   evidence?: Array<{ label: string; val: string; state: string }>;
-  provider: 'ai_assistant' | 'local_rule_engine';
-  timestamp: string;
+  provider?: 'ai_assistant' | 'local_rule_engine' | 'groq_industrial_ai' | 'industrial_ai' | 'Groq' | string;
+  timestamp?: string;
+  error?: string;
 }

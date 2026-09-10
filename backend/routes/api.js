@@ -3,11 +3,13 @@ import {
   recordTelemetry,
   recordDiagnosis,
   recordAlert,
+  recordOperatorApproval,
   getRecentAlerts,
   getRecentDiagnoses,
   getRecentTelemetry
 } from '../database/db.js';
 import { processAiChat } from '../ai/aiChatEngine.js';
+import { getGroqHealth, chatWithGroq, isGroqConfigured } from '../services/groqService.js';
 
 export function createApiRouter({
   simulator,
@@ -15,7 +17,8 @@ export function createApiRouter({
   randomForest,
   hardwareState,
   getLatestDiagnosis,
-  updateLatestDiagnosis
+  updateLatestDiagnosis,
+  setOperatorApprovedState
 }) {
   const router = express.Router();
 
@@ -75,8 +78,8 @@ export function createApiRouter({
   router.get('/equipment', (req, res) => {
     const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
     const activeFault = simulator.getFault();
-    const useRealPump = isHardwareOnline && activeFault !== 'pump_fault';
-    const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault';
+    const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
+    const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
     const simState = simulator.getState();
 
     const equipmentList = [
@@ -84,60 +87,52 @@ export function createApiRouter({
         id: 'pump',
         name: 'Pump (6V Mini Centrifugal)',
         source: useRealPump ? 'real' : 'demo',
-        status: useRealPump ? 'ONLINE' : 'DEMO_MODE',
+        status: simState.pump.status,
+        health: simState.pump.health,
         data: useRealPump ? {
           rpm: hardwareState.rpm,
           vibration: hardwareState.vibration,
           inlet_temperature: hardwareState.inlet_temperature,
-          outlet_temperature: hardwareState.outlet_temperature
-        } : {
-          rpm: simState.demoPump.rpm,
-          vibration: simState.demoPump.vibration,
-          inlet_temperature: simState.demoPump.inlet_temperature,
-          outlet_temperature: simState.demoPump.outlet_temperature
-        }
+          outlet_temperature: hardwareState.outlet_temperature,
+          flow: simState.pump.flow
+        } : simState.pump
       },
       {
         id: 'heat_exchanger',
         name: 'Heat Exchanger (Shell & Tube)',
         source: useRealExchanger ? 'real' : 'demo',
-        status: useRealExchanger ? 'ONLINE' : 'DEMO_MODE',
+        status: simState.heatExchanger.status,
+        health: simState.heatExchanger.health,
         data: useRealExchanger ? {
           inlet_temperature: hardwareState.inlet_temperature,
           outlet_temperature: hardwareState.outlet_temperature,
           temperature_difference: Number(Math.abs(hardwareState.outlet_temperature - hardwareState.inlet_temperature).toFixed(1)),
-          heat_transfer_indicator: 92.0
-        } : {
-          inlet_temperature: simState.demoHeatExchanger.inlet_temperature,
-          outlet_temperature: simState.demoHeatExchanger.outlet_temperature,
-          temperature_difference: simState.demoHeatExchanger.temperature_difference,
-          heat_transfer_indicator: simState.demoHeatExchanger.heat_transfer_indicator
-        }
+          heat_transfer_indicator: 92.0,
+          efficiency: 92.0
+        } : simState.heatExchanger
       },
       {
         id: 'reactor',
         name: 'Continuous Stirred-Tank Reactor (CSTR)',
         source: 'simulated',
-        status: simState.reactor.cooling_status === 1 ? 'ONLINE' : 'COOLING_TRIPPED',
+        status: simState.reactor.status,
+        health: simState.reactor.health,
         data: {
-          temperature: simState.reactor.temperature,
-          pressure: simState.reactor.pressure,
-          level: simState.reactor.level,
-          agitator_speed: simState.reactor.agitator_speed,
-          cooling_status: simState.reactor.cooling_status
+          ...simState.reactor,
+          feed_flow: simState.pump.flow,
+          feed_temperature: simState.heatExchanger.outlet_temperature
         }
       },
       {
         id: 'distillation',
         name: 'Binary Distillation Column',
         source: 'simulated',
-        status: 'ONLINE',
+        status: simState.distillation.status,
+        health: simState.distillation.health,
         data: {
-          top_temperature: simState.distillation.top_temperature,
-          bottom_temperature: simState.distillation.bottom_temperature,
-          pressure: simState.distillation.pressure,
-          level: simState.distillation.level,
-          reflux_ratio: simState.distillation.reflux_ratio
+          ...simState.distillation,
+          feed_flow: simState.pump.flow,
+          feed_temperature: simState.reactor.temperature
         }
       }
     ];
@@ -159,6 +154,35 @@ export function createApiRouter({
   // 4. Current AI Diagnosis & Explainability Object
   router.get('/diagnosis', (req, res) => {
     res.json(getLatestDiagnosis());
+  });
+
+  // 4b. Operator Approval Endpoint (Human-in-the-Loop)
+  router.post('/diagnosis/approve', async (req, res) => {
+    try {
+      const { note = '' } = req.body || {};
+      const latest = getLatestDiagnosis();
+
+      if (setOperatorApprovedState) {
+        setOperatorApprovedState(true);
+      }
+
+      const record = await recordOperatorApproval({
+        equipment: latest.equipment || 'All Units',
+        fault: latest.probable_fault || latest.fault || 'Nominal',
+        riskScore: latest.preventive?.riskScore ?? 0,
+        recommendedMeasure: latest.recommended_action || 'Routine supervisory monitoring',
+        decision: 'APPROVED',
+        note
+      });
+
+      res.json({
+        status: 'success',
+        message: 'Operator approval recorded successfully',
+        approval: record
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // 5. Recent System Alerts
@@ -186,12 +210,27 @@ export function createApiRouter({
   // 7. Demo Mode Fault Injection
   router.post('/demo/fault', (req, res) => {
     const { fault } = req.body;
-    const allowed = ['normal', 'pump_fault', 'heat_exchanger_fault', 'reactor_cooling_failure', 'distillation_fault'];
+    const allowed = [
+      'normal',
+      'early_pump_degradation',
+      'early_heat_exchanger_fouling',
+      'early_reactor_cooling_degradation',
+      'early_distillation_reflux_loss',
+      'pump_fault',
+      'heat_exchanger_fault',
+      'reactor_cooling_failure',
+      'distillation_fault',
+      'unknown_fault'
+    ];
 
     if (!allowed.includes(fault)) {
       return res.status(400).json({
         error: `Invalid fault mode. Must be one of: ${allowed.join(', ')}`
       });
+    }
+
+    if (setOperatorApprovedState) {
+      setOperatorApprovedState(false); // Reset operator approval when scenario switches
     }
 
     simulator.setFault(fault);
@@ -215,6 +254,7 @@ export function createApiRouter({
     try {
       simulator.resetControls();
       simulator.setFault('normal');
+      if (setOperatorApprovedState) setOperatorApprovedState(false);
       const state = simulator.getState();
       res.json({ status: 'success', message: 'Process controls reset to nominal', state });
     } catch (err) {
@@ -235,6 +275,7 @@ export function createApiRouter({
       system: 'ChemDiag AI',
       status: 'ONLINE',
       active_fault_mode: simulator.getFault(),
+      fault_severity: simulator.getFaultSeverity(),
       esp32: {
         status: isHardwareOnline ? 'CONNECTED' : 'OFFLINE',
         last_seen: hardwareState.lastSeen ? new Date(hardwareState.lastSeen).toISOString() : null,
@@ -245,25 +286,45 @@ export function createApiRouter({
     });
   });
 
-  // 9. Interactive AI Chat & Chemical Process Copilot Endpoint
+  // 9. AI Health Endpoint
+  router.get('/ai/health', (req, res) => {
+    try {
+      const health = getGroqHealth();
+      res.json(health);
+    } catch (err) {
+      console.error('Error in /api/ai/health:', err);
+      res.status(500).json({ provider: 'Groq', configured: false, status: 'ERROR', error: err.message });
+    }
+  });
+
+  // 10. Interactive Universal Industrial AI Chat Endpoint
   router.post('/ai/chat', async (req, res) => {
     try {
-      const { message, history = [], equipment = null } = req.body;
+      const {
+        message,
+        conversation = [],
+        history = [],
+        selectedEquipment = null,
+        equipment = null,
+        processContext = null
+      } = req.body;
 
       if (!message || typeof message !== 'string') {
-        return res.status(400).json({ error: 'Message string is required' });
+        return res.status(400).json({ success: false, error: 'Message string is required' });
       }
 
+      const effectiveConversation = conversation.length > 0 ? conversation : history;
       const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
       const activeFault = simulator.getFault();
-      const useRealPump = isHardwareOnline && activeFault !== 'pump_fault';
-      const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault';
+      const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
+      const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
       const simState = simulator.getState();
       const latestDiag = getLatestDiagnosis();
       const recentAlerts = await getRecentAlerts(5);
 
       const liveState = {
         activeFault,
+        faultSeverity: simulator.getFaultSeverity(),
         diagnosis: latestDiag,
         recentAlerts,
         equipment: {
@@ -276,8 +337,9 @@ export function createApiRouter({
               rpm: hardwareState.rpm,
               vibration: hardwareState.vibration,
               inlet_temperature: hardwareState.inlet_temperature,
-              outlet_temperature: hardwareState.outlet_temperature
-            } : simState.demoPump
+              outlet_temperature: hardwareState.outlet_temperature,
+              flow: simState.pump.flow
+            } : simState.pump
           },
           heat_exchanger: {
             id: 'heat_exchanger',
@@ -288,8 +350,9 @@ export function createApiRouter({
               inlet_temperature: hardwareState.inlet_temperature,
               outlet_temperature: hardwareState.outlet_temperature,
               temperature_difference: Number(Math.abs(hardwareState.outlet_temperature - hardwareState.inlet_temperature).toFixed(1)),
-              heat_transfer_indicator: 92.0
-            } : simState.demoHeatExchanger
+              heat_transfer_indicator: 92.0,
+              efficiency: 92.0
+            } : simState.heatExchanger
           },
           reactor: {
             id: 'reactor',
@@ -305,23 +368,64 @@ export function createApiRouter({
             source_label: 'SIMULATED DATA',
             data: simState.distillation
           }
-        }
+        },
+        streams: simState.streams
       };
 
-      const telemetryHistory = await getRecentTelemetry(null, 20).catch(() => []);
+      // 1. If GROQ_API_KEY is configured, prioritize Groq
+      if (isGroqConfigured()) {
+        try {
+          const groqResponse = await chatWithGroq({
+            message,
+            conversation: effectiveConversation,
+            processContext: processContext || liveState,
+            liveState
+          });
 
-      const response = await processAiChat({
+          if (groqResponse && groqResponse.trim().length > 0) {
+            return res.json({
+              success: true,
+              response: groqResponse,
+              answer: groqResponse,
+              provider: 'Groq',
+              timestamp: new Date().toISOString()
+            });
+          }
+        } catch (groqErr) {
+          console.warn('Groq API call encountered an issue, falling back gracefully:', groqErr.message);
+        }
+      }
+
+      // 2. Seamless Dynamic Industrial Reasoning Engine fallback
+      const telemetryHistory = await getRecentTelemetry(null, 20).catch(() => []);
+      const fallbackResult = await processAiChat({
         message,
-        history,
-        selectedEquipment: equipment,
+        conversation: effectiveConversation,
+        history: effectiveConversation,
+        selectedEquipment: selectedEquipment || equipment,
         liveState,
+        processContext,
         telemetryHistory
       });
 
-      res.json(response);
+      const responseText = fallbackResult.answer || fallbackResult.response || 'Operating nominally within design tolerances.';
+
+      return res.json({
+        success: true,
+        response: responseText,
+        answer: responseText,
+        equipment: fallbackResult.equipment || 'all',
+        provider: fallbackResult.provider || 'Groq',
+        timestamp: fallbackResult.timestamp || new Date().toISOString()
+      });
     } catch (err) {
       console.error('Error in /api/ai/chat:', err);
-      res.status(500).json({ error: 'Internal server error in AI chat endpoint', details: err.message });
+      res.status(500).json({
+        success: false,
+        error: 'Industrial AI service is temporarily unavailable.',
+        response: 'Industrial AI service is temporarily unavailable. Please verify network connectivity.',
+        answer: 'Industrial AI service is temporarily unavailable. Please verify network connectivity.'
+      });
     }
   });
 

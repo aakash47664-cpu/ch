@@ -44,6 +44,13 @@ const hardwareState = {
   source: 'demo'
 };
 
+// Operator approval state for current session
+let isOperatorApproved = false;
+
+function setOperatorApprovedState(val) {
+  isOperatorApproved = val;
+}
+
 // ----------------------------------------------------
 // 2. Machine Learning Initialization
 // ----------------------------------------------------
@@ -67,6 +74,7 @@ let latestDiagnosis = {
   equipment: 'All Units',
   anomaly: false,
   anomaly_score: 0.18,
+  is_unknown_fault: false,
   fault: 'normal',
   probable_fault: 'Nominal Operation',
   root_cause: 'No significant anomaly detected.',
@@ -74,6 +82,11 @@ let latestDiagnosis = {
   confidence: 0.95,
   important_variables: ['All variables within nominal tolerances'],
   recommended_action: 'Continue routine monitoring. System operating within nominal limits.',
+  xai_contributions: [{ feature: 'nominal', label: 'All variables nominal', change: '✓ Nominal', contributionPercent: 100, isUp: false }],
+  prognosis: { degradationPercent: 0, trend: 'STABLE', riskStage: 'NORMAL', timeToThreshold: 'Operating nominally', narrative: 'Operating nominally' },
+  preventive: { riskScore: 12, riskStage: 'NORMAL', observedEvidence: 'Operating within boundaries', probableCause: 'Nominal', preventiveMeasure: 'Continue routine monitoring', verificationRequired: false, recommendationAllowed: true },
+  safetyGate: { gateState: 'NORMAL', statusLabel: '✓ NOMINAL OPERATION', safeToRecommend: true, actionBlocked: false, requiresOperatorApproval: false, bannerType: 'safe', headline: 'SYSTEM OPERATING NOMINALLY', reason: 'Parameters nominal', directive: '✓ CONTINUE ROUTINE MONITORING' },
+  operatorApproval: { required: false, approved: false, message: 'Nominal operation' },
   timestamp: new Date().toISOString()
 };
 
@@ -94,7 +107,8 @@ app.use('/api', createApiRouter({
   randomForest,
   hardwareState,
   getLatestDiagnosis,
-  updateLatestDiagnosis
+  updateLatestDiagnosis,
+  setOperatorApprovedState
 }));
 
 // 4b. Static Frontend Assets (if built)
@@ -107,12 +121,11 @@ if (fs.existsSync(distPath)) {
     res.sendFile(path.join(distPath, 'index.html'));
   });
 } else {
-  // Root greeting fallback
   app.get('/', (req, res) => {
     res.json({
       name: 'ChemDiag AI Backend',
-      version: '1.0.0',
-      description: 'Explainable AI-Based Fault Diagnosis and Root-Cause Analysis',
+      version: '2.0.0',
+      description: 'Explainable AI-Based Fault Diagnosis, Digital Twin & Safety-Gated Decision Support',
       status: 'ONLINE',
       docs: '/api/status'
     });
@@ -157,20 +170,18 @@ function buildBroadcastPayload() {
   const simState = simulator.getState();
 
   const activeFault = simulator.getFault();
-  const useRealPump = isHardwareOnline && activeFault !== 'pump_fault';
-  const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault';
+  const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
+  const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
 
   const pumpData = useRealPump ? {
     rpm: hardwareState.rpm,
     vibration: hardwareState.vibration,
     inlet_temperature: hardwareState.inlet_temperature,
     outlet_temperature: hardwareState.outlet_temperature,
+    flow: simState.pump.flow,
     source: 'real'
   } : {
-    rpm: simState.demoPump.rpm,
-    vibration: simState.demoPump.vibration,
-    inlet_temperature: simState.demoPump.inlet_temperature,
-    outlet_temperature: simState.demoPump.outlet_temperature,
+    ...simState.pump,
     source: 'demo'
   };
 
@@ -179,12 +190,11 @@ function buildBroadcastPayload() {
     outlet_temperature: hardwareState.outlet_temperature,
     temperature_difference: Number(Math.abs(hardwareState.outlet_temperature - hardwareState.inlet_temperature).toFixed(1)),
     heat_transfer_indicator: 92.0,
+    efficiency: 92.0,
+    status: simState.heatExchanger.status,
     source: 'real'
   } : {
-    inlet_temperature: simState.demoHeatExchanger.inlet_temperature,
-    outlet_temperature: simState.demoHeatExchanger.outlet_temperature,
-    temperature_difference: simState.demoHeatExchanger.temperature_difference,
-    heat_transfer_indicator: simState.demoHeatExchanger.heat_transfer_indicator,
+    ...simState.heatExchanger,
     source: 'demo'
   };
 
@@ -192,6 +202,7 @@ function buildBroadcastPayload() {
     type: 'PROCESS_UPDATE',
     timestamp: new Date().toISOString(),
     active_fault_mode: simulator.getFault(),
+    fault_severity: simulator.getFaultSeverity(),
     esp32_status: {
       connected: isHardwareOnline,
       status: isHardwareOnline ? 'REAL HARDWARE CONNECTED' : 'ESP32 OFFLINE',
@@ -201,25 +212,16 @@ function buildBroadcastPayload() {
       pump: {
         id: 'pump',
         name: 'Pump (6V Mini Centrifugal)',
-        source: pumpData.source, // 'real' | 'demo'
+        source: pumpData.source,
         source_label: useRealPump ? 'REAL DATA' : 'DEMO / SIMULATED',
-        data: {
-          ...pumpData,
-          flow: simState.pump.flow,
-          pressure: simState.pump.pressure,
-          status: simState.pump.status
-        }
+        data: pumpData
       },
       heat_exchanger: {
         id: 'heat_exchanger',
         name: 'Heat Exchanger (Shell & Tube)',
-        source: heatExchangerData.source, // 'real' | 'demo'
+        source: heatExchangerData.source,
         source_label: useRealExchanger ? 'REAL DATA' : 'DEMO / SIMULATED',
-        data: {
-          ...heatExchangerData,
-          efficiency: simState.heatExchanger.efficiency,
-          status: simState.heatExchanger.status
-        }
+        data: heatExchangerData
       },
       reactor: {
         id: 'reactor',
@@ -272,25 +274,30 @@ setInterval(async () => {
       outlet_temperature: hardwareState.outlet_temperature
     });
 
-    // 1. Evolve continuous simulator states
+    // 1. Evolve continuous simulator states and progressive fault severity
     simulator.tick();
 
     const activeFault = simulator.getFault();
-    const useRealPump = isHardwareOnline && activeFault !== 'pump_fault';
-    const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault';
+    const faultSeverity = simulator.getFaultSeverity();
+    const faultTicks = simulator.getFaultTicks();
+
+    const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
+    const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
     const simState = simulator.getState();
 
     // 2. Assemble process telemetry vector
     const telemetryVector = {
       // Pump
-      pump_rpm: useRealPump ? hardwareState.rpm : simState.demoPump.rpm,
-      pump_vibration: useRealPump ? hardwareState.vibration : simState.demoPump.vibration,
-      pump_inlet_temperature: useRealPump ? hardwareState.inlet_temperature : simState.demoPump.inlet_temperature,
-      pump_outlet_temperature: useRealPump ? hardwareState.outlet_temperature : simState.demoPump.outlet_temperature,
+      pump_rpm: useRealPump ? hardwareState.rpm : simState.pump.rpm,
+      pump_vibration: useRealPump ? hardwareState.vibration : simState.pump.vibration,
+      pump_flow: simState.pump.flow,
+      pump_inlet_temperature: useRealPump ? hardwareState.inlet_temperature : simState.pump.inlet_temperature,
+      pump_outlet_temperature: useRealPump ? hardwareState.outlet_temperature : simState.pump.outlet_temperature,
       // Heat Exchanger
-      heat_exchanger_inlet_temperature: useRealExchanger ? hardwareState.inlet_temperature : simState.demoHeatExchanger.inlet_temperature,
-      heat_exchanger_outlet_temperature: useRealExchanger ? hardwareState.outlet_temperature : simState.demoHeatExchanger.outlet_temperature,
-      heat_exchanger_indicator: useRealExchanger ? 92.0 : simState.demoHeatExchanger.heat_transfer_indicator,
+      heat_exchanger_inlet_temperature: useRealExchanger ? hardwareState.inlet_temperature : simState.heatExchanger.inlet_temperature,
+      heat_exchanger_outlet_temperature: useRealExchanger ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature,
+      heat_exchanger_efficiency: simState.heatExchanger.efficiency,
+      heat_exchanger_indicator: useRealExchanger ? 92.0 : simState.heatExchanger.heat_transfer_indicator,
       // Reactor
       reactor_temperature: simState.reactor.temperature,
       reactor_pressure: simState.reactor.pressure,
@@ -324,13 +331,20 @@ setInterval(async () => {
     // 4. Step B: Random Forest Fault Classification
     const rfResult = randomForest.predict(mlSample);
 
-    // 5. Step C: Root-Cause & Explainability Rules Engine
+    // 5. Step C: Comprehensive Root-Cause, Unknown Guard, Prognosis & Safety Gate
     const diagnosis = diagnoseProcessState({
       telemetry: telemetryVector,
       mlAnomaly: ifResult.anomaly,
       mlScore: ifResult.anomaly_score,
       mlClass: rfResult.fault_type,
-      mlConfidence: rfResult.confidence
+      mlConfidence: rfResult.confidence,
+      rfProbabilities: rfResult.probabilities || {},
+      faultMode: activeFault,
+      faultSeverity,
+      faultTicks,
+      isHardwareOnline,
+      hardwareLastSeen: hardwareState.lastSeen,
+      operatorApproved: isOperatorApproved
     });
 
     latestDiagnosis = diagnosis;
@@ -352,7 +366,7 @@ setInterval(async () => {
       await recordTelemetry('reactor', 'simulated', simState.reactor);
       await recordTelemetry('distillation', 'simulated', simState.distillation);
       if (!isHardwareOnline) {
-        await recordTelemetry('pump', 'demo', simState.demoPump);
+        await recordTelemetry('pump', 'demo', simState.pump);
       }
     }
 
@@ -372,9 +386,10 @@ async function start() {
     await initDb();
     server.listen(PORT, () => {
       console.log(`=======================================================`);
-      console.log(`🚀 ChemDiag AI Server listening on http://localhost:${PORT}`);
+      console.log(`🚀 ChemDiag AI Server v2.0 listening on http://localhost:${PORT}`);
       console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}/ws`);
       console.log(`💡 ESP32 Sensor Ingestion: POST http://localhost:${PORT}/api/sensors`);
+      console.log(`🛡️ Safety Gate & Unknown Fault Guard: ACTIVE`);
       console.log(`=======================================================`);
     });
   } catch (err) {

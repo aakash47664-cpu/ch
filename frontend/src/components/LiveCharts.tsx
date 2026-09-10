@@ -11,7 +11,7 @@ import {
   Legend,
   ReferenceLine
 } from 'recharts';
-import { Activity, Clock } from 'lucide-react';
+import { Activity, Clock, TrendingUp } from 'lucide-react';
 
 interface LiveChartsProps {
   data: TimeSeriesPoint[];
@@ -67,6 +67,7 @@ export const LiveCharts: React.FC<LiveChartsProps> = ({
   const reactorPressStats = getStats((p) => p.reactorPressure);
   const distTopStats = getStats((p) => p.distTopTemp);
   const distRefluxStats = getStats((p) => p.distReflux);
+  const riskStats = getStats((p) => p.riskScore ?? 12);
 
   const handleTabChange = (view: string) => {
     setActiveView(view);
@@ -87,6 +88,8 @@ export const LiveCharts: React.FC<LiveChartsProps> = ({
               ? 'REACTOR (R-101) — TEMPERATURE & PRESSURE TREND'
               : activeView === 'distillation'
               ? 'DISTILLATION (D-101) — REFLUX & TOP TEMP TREND'
+              : activeView === 'risk'
+              ? 'PREVENTIVE RISK & DEGRADATION PROGRESSION TIMELINE'
               : 'LIVE PROCESS DYNAMIC TRENDS'}
           </h3>
           <span className="live-trend-pill">
@@ -127,6 +130,13 @@ export const LiveCharts: React.FC<LiveChartsProps> = ({
           >
             D-101 Distillation
           </button>
+          <button
+            className={`chart-tab-btn ${activeView === 'risk' ? 'active' : ''}`}
+            onClick={() => handleTabChange('risk')}
+          >
+            <TrendingUp size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />
+            Risk Progression
+          </button>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
@@ -134,6 +144,34 @@ export const LiveCharts: React.FC<LiveChartsProps> = ({
           <span>Last sync: <strong className="numeric-data" style={{ color: 'var(--text-secondary)' }}>{lastTime}</strong></span>
         </div>
       </div>
+
+      {/* VIEW: RISK PROGRESSION TIMELINE */}
+      {activeView === 'risk' && (
+        <div className="chart-card-focused">
+          <div className="chart-header-row">
+            <span className="chart-title">Preventive Risk Score (0–100) & Degradation Trajectory</span>
+            <span className="chart-live-val">
+              Current Risk: <strong className="numeric-data" style={{ color: riskStats.current > 60 ? '#DC2626' : (riskStats.current > 30 ? '#EA580C' : '#10B981') }}>{riskStats.current} / 100</strong>
+            </span>
+          </div>
+          <div style={{ width: '100%', height: 260, minHeight: 260 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="2 2" stroke="#E2E8F0" />
+                <XAxis dataKey="time" stroke="#64748B" fontSize={10} tickLine={false} />
+                <YAxis stroke="#DC2626" fontSize={10} domain={[0, 100]} tickLine={false} />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: '0.72rem', paddingTop: '6px' }} />
+                <ReferenceLine y={20} stroke="#10B981" strokeDasharray="3 3" label={{ value: 'Normal (0-20)', fill: '#10B981', fontSize: 9, position: 'insideBottomRight' }} />
+                <ReferenceLine y={40} stroke="#F59E0B" strokeDasharray="3 3" label={{ value: 'Early Warning (21-40)', fill: '#F59E0B', fontSize: 9, position: 'insideTopLeft' }} />
+                <ReferenceLine y={60} stroke="#EA580C" strokeDasharray="3 3" label={{ value: 'Developing (41-60)', fill: '#EA580C', fontSize: 9, position: 'insideTopLeft' }} />
+                <ReferenceLine y={80} stroke="#DC2626" strokeDasharray="3 3" label={{ value: 'High Risk (61-80)', fill: '#DC2626', fontSize: 9, position: 'insideTopLeft' }} />
+                <Line type="monotone" dataKey="riskScore" name="Preventive Risk Score (0-100)" stroke="#DC2626" strokeWidth={2.4} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {/* VIEW A: FOCUSED SINGLE UNIT LARGE CHART */}
       {activeView === 'pump' && (

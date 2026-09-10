@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Diagnosis, EquipmentItem, PumpData, HeatExchangerData, ReactorData, DistillationData } from '../types';
+import { approveOperatorRecommendation } from '../services/api';
 import { AiChatPanel } from './AiChatPanel';
 import {
   ShieldAlert,
@@ -11,7 +12,14 @@ import {
   ArrowRight,
   MessageSquare,
   Sparkles,
-  Layers
+  Layers,
+  AlertTriangle,
+  TrendingUp,
+  ShieldCheck,
+  Check,
+  RotateCcw,
+  BarChart3,
+  Cpu
 } from 'lucide-react';
 
 interface AiDiagnosisPanelProps {
@@ -33,18 +41,48 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
   const [activeTab, setActiveTab] = useState<'pipeline' | 'chat'>('pipeline');
   const [chatEquipment, setChatEquipment] = useState<string | undefined>(initialChatEquipment);
   const [showTooltip, setShowTooltip] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [localApproved, setLocalApproved] = useState(false);
 
   const isAnomaly = diagnosis.anomaly && diagnosis.severity !== 'NORMAL';
+  const isUnknown = !!diagnosis.is_unknown_fault;
+  const isEarly = diagnosis.prognosis?.isEarlyWarning || diagnosis.fault?.startsWith('early_');
   const confidencePercent = Math.round((diagnosis.confidence || 0.85) * 100);
-  const isLowConfidence = (diagnosis.confidence || 0) < 0.60;
 
-  // Switch to chat mode with equipment context
+  const riskScore = diagnosis.preventive?.riskScore ?? 12;
+  const riskStage = diagnosis.preventive?.riskStage ?? 'NORMAL';
+  const prognosis = diagnosis.prognosis;
+  const safetyGate = diagnosis.safetyGate || {
+    gateState: 'NORMAL',
+    statusLabel: '✓ NOMINAL OPERATION',
+    safeToRecommend: true,
+    actionBlocked: false,
+    requiresOperatorApproval: false,
+    bannerType: 'safe',
+    headline: 'SYSTEM OPERATING NOMINALLY',
+    reason: 'All process parameters within nominal design limits.',
+    directive: '✓ CONTINUE ROUTINE MONITORING'
+  };
+
+  const xaiContributions = diagnosis.xai_contributions || [];
+
   const handleAskAiAbout = (equipName?: string) => {
     setChatEquipment(equipName);
     setActiveTab('chat');
   };
 
-  // Helper to determine severity styling
+  const handleOperatorApproval = async () => {
+    try {
+      setIsApproving(true);
+      await approveOperatorRecommendation('Operator verified telemetry on dashboard and approved preventive recommendation.');
+      setLocalApproved(true);
+    } catch (e) {
+      console.error('Operator approval error:', e);
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
   const getSeverityBadgeClass = (sev: string) => {
     switch (sev) {
       case 'CRITICAL': return 'sev-critical';
@@ -55,152 +93,16 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
     }
   };
 
-  // Helper to construct dynamic key variables during normal operation from actual live telemetry
-  const getNormalKeyVariables = () => {
-    if (diagnosis.normal_variables && diagnosis.normal_variables.length > 0) {
-      return diagnosis.normal_variables;
-    }
-
-    const d = equipment?.distillation?.data;
-    const p = equipment?.pump?.data;
-    const r = equipment?.reactor?.data;
-    const hx = equipment?.heat_exchanger?.data;
-
-    return [
-      { name: 'Reflux Ratio', val: (d?.reflux_ratio ?? 1.85).toFixed(2), status: 'NORMAL' },
-      { name: 'Top Temperature', val: `${(d?.top_temperature ?? 76.5).toFixed(1)} °C`, status: 'NORMAL' },
-      { name: 'Column Pressure', val: `${(d?.pressure ?? 2.10).toFixed(2)} bar`, status: 'NORMAL' },
-      { name: 'Pump Vibration', val: `${(p?.vibration ?? 0.08).toFixed(2)} g`, status: 'NORMAL' },
-      { name: 'Reactor Temperature', val: `${(r?.temperature ?? 65.0).toFixed(1)} °C`, status: 'NORMAL' },
-      { name: 'Heat Exchanger ΔT', val: `${(hx?.temperature_difference ?? 12.9).toFixed(1)} °C`, status: 'NORMAL' }
-    ];
+  const getRiskScoreColor = (score: number) => {
+    if (score <= 20) return '#10B981'; // Green
+    if (score <= 40) return '#F59E0B'; // Amber
+    if (score <= 60) return '#EA580C'; // Orange
+    if (score <= 80) return '#DC2626'; // High Red
+    return '#991B1B'; // Dark Red
   };
-
-  // Helper to extract dynamic evidence based on active equipment and live values during fault
-  const getDynamicEvidence = () => {
-    const equipName = (diagnosis.equipment || '').toLowerCase();
-    const faultType = (diagnosis.fault || '').toLowerCase();
-
-    const cards = diagnosis.evidence_cards && diagnosis.evidence_cards.length > 0
-      ? diagnosis.evidence_cards
-      : [];
-
-    if (equipName.includes('pump') || faultType.includes('pump')) {
-      const pData = equipment?.pump?.data || { vibration: 0.08, rpm: 2450, outlet_temperature: 38.1 };
-      const vib = pData.vibration ?? 0.08;
-      const rpm = pData.rpm ?? 2450;
-      const temp = pData.outlet_temperature ?? 38.1;
-
-      return {
-        unit: 'PUMP',
-        faultTitle: (diagnosis.probable_fault || 'Pump Mechanical Fault').toUpperCase(),
-        classification: diagnosis.probable_fault || 'Pump Mechanical Fault',
-        classificationDesc: diagnosis.explanation || `Elevated vibration (${vib.toFixed(2)} g) with reduced speed (${Math.round(rpm)} RPM) detected on pump P-101.`,
-        cards: cards.length > 0 ? cards : [
-          { label: 'VIBRATION', val: `${vib.toFixed(2)} g`, state: vib > 0.20 ? '↑ HIGH' : '✓ NORMAL', isWarning: vib > 0.20 },
-          { label: 'PUMP SPEED', val: `${Math.round(rpm)} RPM`, state: rpm < 2200 ? '↓ LOW' : '✓ NORMAL', isWarning: rpm < 2200 },
-          { label: 'CASING TEMP', val: `${temp.toFixed(1)} °C`, state: temp > 40.0 ? '↑ ELEVATED' : '✓ NORMAL', isWarning: temp > 40.0 }
-        ],
-        patternNarrative: diagnosis.pattern_narrative || `Elevated casing vibration (${vib.toFixed(2)} g) and reduced rotational speed (${Math.round(rpm)} RPM) match the pump mechanical-fault pattern.`,
-        rootCauseExplanation: diagnosis.explanation || 'Increased casing vibration accompanied by motor speed loss indicates bearing wear, shaft misalignment, or impeller unbalance.',
-        severityReason: diagnosis.severity_reason || (vib > 0.38 ? 'High dynamic casing acceleration exceeds ISO 10816 vibration boundary.' : 'Moderate vibration and speed degradation.'),
-        priority: diagnosis.severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH'
-      };
-    }
-
-    if (equipName.includes('heat') || faultType.includes('heat') || faultType.includes('exchanger')) {
-      const hxData = equipment?.heat_exchanger?.data || { inlet_temperature: 25.2, outlet_temperature: 38.1, temperature_difference: 12.9 };
-      const deltaT = hxData.temperature_difference ?? 12.9;
-      const tIn = hxData.inlet_temperature ?? 25.2;
-      const tOut = hxData.outlet_temperature ?? 38.1;
-
-      return {
-        unit: 'HEAT EXCHANGER',
-        faultTitle: (diagnosis.probable_fault || 'Heat Exchanger Performance Fault').toUpperCase(),
-        classification: diagnosis.probable_fault || 'Heat Exchanger Performance Fault',
-        classificationDesc: diagnosis.explanation || `Thermal gradient collapse (ΔT = ${deltaT.toFixed(1)}°C) with loss of heat transfer capacity.`,
-        cards: cards.length > 0 ? cards : [
-          { label: 'INLET TEMP', val: `${tIn.toFixed(1)} °C`, state: 'NOMINAL', isWarning: false },
-          { label: 'OUTLET TEMP', val: `${tOut.toFixed(1)} °C`, state: deltaT < 5.0 ? '↓ LOW ΔT' : '✓ NORMAL', isWarning: deltaT < 5.0 },
-          { label: 'ΔT GRADIENT', val: `${deltaT.toFixed(1)} °C`, state: deltaT < 5.0 ? '↓ LOW (< 5°C)' : '✓ NORMAL', isWarning: deltaT < 5.0 }
-        ],
-        patternNarrative: diagnosis.pattern_narrative || `Severe loss of temperature difference (ΔT = ${deltaT.toFixed(1)}°C) between process streams matches tube fouling signature.`,
-        rootCauseExplanation: diagnosis.explanation || 'Reduced temperature difference between inlet and outlet process streams indicates increased fouling thermal resistance.',
-        severityReason: diagnosis.severity_reason || (deltaT < 2.5 ? 'Severe loss of heat transfer capacity across exchanger.' : 'Degraded thermal efficiency across exchanger boundary.'),
-        priority: deltaT < 2.5 ? 'HIGH' : 'MEDIUM'
-      };
-    }
-
-    if (equipName.includes('reactor') || faultType.includes('reactor') || faultType.includes('cooling')) {
-      const rData = equipment?.reactor?.data || { temperature: 65.0, pressure: 2.05, cooling_status: 1 };
-      const temp = rData.temperature ?? 65.0;
-      const press = rData.pressure ?? 2.05;
-      const cooling = rData.cooling_status ?? 1;
-
-      return {
-        unit: 'REACTOR',
-        faultTitle: (diagnosis.probable_fault || 'Reactor Cooling Failure').toUpperCase(),
-        classification: diagnosis.probable_fault || 'Reactor Cooling Failure',
-        classificationDesc: diagnosis.explanation || `Cooling jacket interlock tripped with temperature (${temp.toFixed(1)}°C) and vapor pressure (${press.toFixed(2)} bar) escalation.`,
-        cards: cards.length > 0 ? cards : [
-          { label: 'COOLING STATUS', val: cooling === 0 ? 'OFF' : 'ON', state: cooling === 0 ? '▲ TRIPPED' : 'ACTIVE', isWarning: cooling === 0 },
-          { label: 'VESSEL TEMP', val: `${temp.toFixed(1)} °C`, state: temp > 74.0 ? '↑ HIGH' : '✓ NORMAL', isWarning: temp > 74.0 },
-          { label: 'PRESSURE', val: `${press.toFixed(2)} bar`, state: press > 2.50 ? '↑ HIGH' : '✓ NORMAL', isWarning: press > 2.50 }
-        ],
-        patternNarrative: diagnosis.pattern_narrative || `Cooling status OFF + sharp rise in temperature (${temp.toFixed(1)}°C) and pressure (${press.toFixed(2)} bar) matches cooling-system failure.`,
-        rootCauseExplanation: diagnosis.explanation || 'Loss of cooling jacket heat removal capacity allows exothermic reaction heat to accumulate, driving vapor pressure toward relief thresholds.',
-        severityReason: diagnosis.severity_reason || ((temp > 85.0 || press > 3.20) ? 'Critical thermal runaway condition in CSTR R-101.' : 'Cooling jacket loss with active temperature surge.'),
-        priority: (temp > 85.0 || press > 3.20) ? 'CRITICAL' : 'HIGH'
-      };
-    }
-
-    if (equipName.includes('distillation') || faultType.includes('distillation')) {
-      const dData = equipment?.distillation?.data || { reflux_ratio: 1.85, top_temperature: 76.5, pressure: 2.10 };
-      const reflux = dData.reflux_ratio ?? 1.85;
-      const topT = dData.top_temperature ?? 76.5;
-      const press = dData.pressure ?? 2.10;
-
-      return {
-        unit: 'DISTILLATION COLUMN',
-        faultTitle: (diagnosis.probable_fault || 'Distillation Separation Fault').toUpperCase(),
-        classification: diagnosis.probable_fault || 'Distillation Separation Fault',
-        classificationDesc: diagnosis.explanation || `Reflux ratio depletion (${reflux.toFixed(2)}) causing elevated top temperature (${topT.toFixed(1)}°C) and loss of separation efficiency.`,
-        cards: cards.length > 0 ? cards : [
-          { label: 'REFLUX RATIO', val: `${reflux.toFixed(2)}`, state: reflux < 1.1 ? '↓ LOW' : '✓ NORMAL', isWarning: reflux < 1.1 },
-          { label: 'TOP TEMP', val: `${topT.toFixed(1)} °C`, state: topT > 78.0 ? '↑ HIGH' : '✓ NORMAL', isWarning: topT > 78.0 },
-          { label: 'COLUMN PRESSURE', val: `${press.toFixed(2)} bar`, state: press > 2.60 ? '↑ ELEVATED' : '✓ NORMAL', isWarning: press > 2.60 }
-        ],
-        patternNarrative: diagnosis.pattern_narrative || `Low reflux (${reflux.toFixed(2)}) + elevated top temperature (${topT.toFixed(1)}°C)${press > 2.60 ? ' + increased pressure (' + press.toFixed(2) + ' bar)' : ''} matches column reflux-starvation pattern.`,
-        rootCauseExplanation: diagnosis.explanation || 'Low reflux combined with elevated top temperature indicates reduced liquid return to the column and loss of separation efficiency.',
-        severityReason: diagnosis.severity_reason || (press > 2.60 ? 'High overhead vapor load and pressure accumulation in column T-101.' : 'Loss of fractionating efficiency leading to off-spec distillate.'),
-        priority: press > 2.60 ? 'HIGH' : 'MEDIUM'
-      };
-    }
-
-    // Default fallback
-    return {
-      unit: (diagnosis.equipment || 'PROCESS UNIT').toUpperCase(),
-      faultTitle: (diagnosis.probable_fault || diagnosis.fault || 'Process Deviation').toUpperCase(),
-      classification: diagnosis.probable_fault || diagnosis.fault || 'Process Deviation',
-      classificationDesc: diagnosis.explanation || `Process anomaly identified in ${diagnosis.equipment}.`,
-      cards: cards.length > 0 ? cards : (diagnosis.important_variables || []).slice(0, 3).map(v => ({
-        label: 'PROCESS VARIABLE',
-        val: v,
-        state: 'ABNORMAL',
-        isWarning: true
-      })),
-      patternNarrative: diagnosis.pattern_narrative || 'Multivariate sensor pattern deviates significantly from nominal boundary.',
-      rootCauseExplanation: diagnosis.explanation || diagnosis.root_cause,
-      severityReason: diagnosis.severity_reason || 'Multivariate anomaly score exceeds nominal tolerance.',
-      priority: diagnosis.severity
-    };
-  };
-
-  const evidence = getDynamicEvidence();
-  const normalVariables = getNormalKeyVariables();
 
   return (
-    <section className={`hero-diagnosis-container ${!isAnomaly ? 'status-normal' : 'status-fault'}`} aria-label="AI Diagnosis Hero Panel">
+    <section className={`hero-diagnosis-container ${isUnknown ? 'status-unknown' : isEarly ? 'status-early' : !isAnomaly ? 'status-normal' : 'status-fault'}`} aria-label="AI Diagnosis Hero Panel">
       {/* 1. HERO HEADER WITH DUAL MODE SWITCH */}
       <div className="hero-diag-header">
         <div className="hero-header-title-group">
@@ -208,8 +110,12 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
             <BrainCircuit size={18} />
           </div>
           <div>
-            <h2 className="hero-main-title">AI DIAGNOSIS & INTERACTIVE PROCESS COPILOT</h2>
-            <p className="hero-subtitle">Explainable Real-Time Fault Diagnostics & Live AI Assistant</p>
+            <h2 className="hero-main-title">
+              CHEMDIAG AI NOVELTY ENGINE <span className="numeric-data" style={{ color: 'var(--primary-blue)', fontSize: '0.82rem' }}>[USP: KNOWS WHEN NOT TO ACT]</span>
+            </h2>
+            <p className="hero-subtitle">
+              Digital Twin Simulation · Early Fault Detection · XAI Root Cause · Fault Prognosis · Safety Gate · Human-in-the-Loop
+            </p>
           </div>
         </div>
 
@@ -221,15 +127,15 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
               onClick={() => setActiveTab('pipeline')}
             >
               <Layers size={12} />
-              <span>AUTOMATIC PIPELINE</span>
+              <span>DECISION PIPELINE</span>
             </button>
             <button
               className={`ai-mode-btn ${activeTab === 'chat' ? 'active' : ''}`}
               onClick={() => setActiveTab('chat')}
             >
               <MessageSquare size={12} />
-              <span>ASK CHEMDIAG AI</span>
-              <span className="copilot-pill">COPILOT</span>
+              <span>INDUSTRIAL AI</span>
+              <span className="copilot-pill">UNIVERSAL</span>
             </button>
           </div>
 
@@ -240,17 +146,24 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
             onMouseLeave={() => setShowTooltip(false)}
             onClick={() => setShowTooltip(!showTooltip)}
           >
-            <span>HYBRID ML + FIRST PRINCIPLES</span>
+            <span>11-STAGE DECISION FLOW</span>
             <HelpCircle size={12} color="var(--primary-blue)" />
 
             {showTooltip && (
               <div className="methodology-tooltip" role="tooltip">
-                <div className="tooltip-title">💡 Hybrid Explainable AI Architecture</div>
+                <div className="tooltip-title">💡 ChemDiag Complete Novelty Architecture</div>
                 <p className="tooltip-text">
-                  <strong>1. Isolation Forest:</strong> Unsupervised outlier detection across continuous process features.<br />
-                  <strong>2. Random Forest:</strong> Multi-class fault signature classification.<br />
-                  <strong>3. Process Heuristics:</strong> Chemical engineering rules to deduce root cause and operator actions.<br />
-                  <strong>4. Interactive AI Copilot:</strong> Real-time Q&A grounded on live sensor telemetry.
+                  <strong>1. Digital Twin:</strong> Continuous first-principles process simulation.<br />
+                  <strong>2. Isolation Forest:</strong> Unsupervised outlier anomaly detection.<br />
+                  <strong>3. Random Forest:</strong> Calibrated multi-class classification.<br />
+                  <strong>4. Unknown Fault Guard:</strong> Refuses to force classification on uncharacteristic patterns.<br />
+                  <strong>5. Early Detection:</strong> Flags degradation before critical boundaries.<br />
+                  <strong>6. Prognosis:</strong> Dynamic degradation & trend estimation.<br />
+                  <strong>7. XAI:</strong> Transparent percentage feature contribution.<br />
+                  <strong>8. Preventive Engine:</strong> Risk score (0-100) & stage recommendations.<br />
+                  <strong>9. Safety Gate:</strong> Evaluates confidence & limits to block unsafe action.<br />
+                  <strong>10. Grounded Copilot:</strong> Zero-hallucination interactive process assistance.<br />
+                  <strong>11. Human-in-the-Loop:</strong> Explicit operator approval for recommendations.
                 </p>
               </div>
             )}
@@ -261,292 +174,327 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
       {/* MODE 1: AUTOMATIC DIAGNOSIS PIPELINE */}
       {activeTab === 'pipeline' && (
         <>
-          {/* VISUAL DIAGNOSTIC PIPELINE FLOW BAR */}
+          {/* VISUAL DIAGNOSTIC PIPELINE FLOW BREADCRUMB */}
           <div className="diag-pipeline-bar">
-            <div className={`pipeline-node ${isAnomaly ? 'node-fault' : 'node-nominal'}`}>
+            <div className={`pipeline-node ${isUnknown ? 'node-unknown' : isEarly ? 'node-early' : isAnomaly ? 'node-fault' : 'node-nominal'}`}>
               <span className="pipeline-node-num">1</span>
-              <span>ANOMALY: {isAnomaly ? 'DETECTED' : 'NONE'}</span>
+              <span>ANOMALY: {isAnomaly ? (isUnknown ? 'UNKNOWN' : isEarly ? 'EARLY DRIFT' : 'CONFIRMED') : 'NONE'}</span>
             </div>
             <ArrowRight className="pipeline-arrow" size={12} />
 
-            <div className={`pipeline-node ${isAnomaly ? 'node-fault' : 'node-nominal'}`}>
+            <div className={`pipeline-node ${isUnknown ? 'node-unknown' : isEarly ? 'node-early' : isAnomaly ? 'node-fault' : 'node-nominal'}`}>
               <span className="pipeline-node-num">2</span>
-              <span>FAULT: {isAnomaly ? evidence.unit : 'NOMINAL'}</span>
+              <span>CLASSIFIER: {isUnknown ? 'UNCLASSIFIED' : diagnosis.equipment}</span>
             </div>
             <ArrowRight className="pipeline-arrow" size={12} />
 
             <div className={`pipeline-node ${isAnomaly ? 'node-active' : 'node-nominal'}`}>
               <span className="pipeline-node-num">3</span>
-              <span>ROOT CAUSE</span>
+              <span>XAI ROOT CAUSE</span>
             </div>
             <ArrowRight className="pipeline-arrow" size={12} />
 
             <div className={`pipeline-node ${isAnomaly ? 'node-active' : 'node-nominal'}`}>
               <span className="pipeline-node-num">4</span>
-              <span>EVIDENCE</span>
+              <span>PROGNOSIS</span>
             </div>
             <ArrowRight className="pipeline-arrow" size={12} />
 
             <div className={`pipeline-node ${isAnomaly ? 'node-active' : 'node-nominal'}`}>
               <span className="pipeline-node-num">5</span>
-              <span>SEVERITY</span>
+              <span>RISK ({riskScore}/100)</span>
             </div>
             <ArrowRight className="pipeline-arrow" size={12} />
 
-            <div className={`pipeline-node ${isAnomaly ? 'node-active' : 'node-nominal'}`}>
+            <div className={`pipeline-node ${safetyGate.safeToRecommend ? 'node-safe' : 'node-blocked'}`}>
               <span className="pipeline-node-num">6</span>
-              <span>ACTION</span>
+              <span>SAFETY GATE: {safetyGate.safeToRecommend ? 'SAFE' : 'BLOCKED'}</span>
             </div>
           </div>
 
-          {/* STATE A: SYSTEM IS NOMINAL */}
-          {!isAnomaly ? (
-            <div className="normal-state-panel">
-              {/* TOP NORMAL BANNER */}
-              <div className="normal-banner">
-                <div className="normal-icon-badge">
-                  <CheckCircle2 size={20} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div className="normal-headline">✓ NO PROCESS ANOMALY DETECTED</div>
-                  <div className="normal-subheadline">
-                    System Status: <strong style={{ color: '#15803D' }}>NOMINAL</strong> · All physical sensor streams and continuous process models operating within expected envelopes.
+          {/* MAIN PROMINENT SAFETY GATE BANNER (CORE USP DISPLAY) */}
+          <div className={`safety-gate-hero-banner banner-${safetyGate.bannerType}`}>
+            <div className="safety-gate-icon-group">
+              {safetyGate.bannerType === 'safe' ? (
+                <ShieldCheck size={26} color="#15803D" />
+              ) : safetyGate.bannerType === 'unknown' ? (
+                <HelpCircle size={26} color="#D97706" />
+              ) : safetyGate.bannerType === 'critical' ? (
+                <AlertTriangle size={26} color="#DC2626" />
+              ) : (
+                <ShieldAlert size={26} color="#EA580C" />
+              )}
+              <div>
+                <div className="safety-gate-headline-text">{safetyGate.headline}</div>
+                <div className="safety-gate-reason-text">{safetyGate.reason}</div>
+              </div>
+            </div>
+
+            <div className="safety-gate-action-group">
+              <span className={`safety-status-pill pill-${safetyGate.bannerType}`}>
+                {safetyGate.statusLabel}
+              </span>
+              <button
+                className="ask-ai-quick-btn"
+                onClick={() => handleAskAiAbout()}
+                title="Ask AI why this safety state was assigned"
+              >
+                <Sparkles size={12} />
+                <span>Ask AI Why</span>
+              </button>
+            </div>
+          </div>
+
+          {/* ========================================================================= */}
+          {/* SECTION A: UNKNOWN FAULT STATE (PRIMARY USP) */}
+          {/* ========================================================================= */}
+          {isUnknown && (
+            <div className="unknown-fault-display-container">
+              <div className="unknown-banner-grid">
+                <div className="unknown-card">
+                  <span className="step-label" style={{ color: '#D97706' }}>⚠ OBSERVED SENSOR ABNORMALITIES</span>
+                  <div className="unknown-abnormal-list">
+                    {(diagnosis.important_variables || []).map((v, i) => (
+                      <div key={i} className="unknown-abnormal-item">
+                        <span className="bullet-dot">●</span>
+                        <strong className="numeric-data">{v}</strong>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <button
-                  className="ask-ai-quick-btn"
-                  onClick={() => handleAskAiAbout()}
-                  title="Ask AI questions about current process"
-                >
-                  <Sparkles size={12} />
-                  <span>Ask AI Assistant</span>
-                </button>
-              </div>
 
-              {/* AI ASSESSMENT & AI REASONING ROW */}
-              <div className="normal-split-row">
-                {/* AI ASSESSMENT CARD */}
-                <div className="normal-card">
-                  <span className="step-label">AI ASSESSMENT</span>
-                  <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                      Confidence: <strong style={{ color: 'var(--primary-blue)', fontFamily: 'var(--font-mono)' }}>{confidencePercent}%</strong>
+                <div className="unknown-card">
+                  <span className="step-label" style={{ color: '#DC2626' }}>KNOWN FAULT PATTERN MATCH</span>
+                  <div style={{ marginTop: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', marginBottom: '4px' }}>
+                      <span>Classification Confidence:</span>
+                      <strong className="numeric-data" style={{ color: '#DC2626' }}>{confidencePercent}% (INSUFFICIENT)</strong>
                     </div>
-                    <p style={{ fontSize: '0.82rem', color: 'var(--text-main)', lineHeight: '1.4', margin: 0 }}>
-                      {diagnosis.assessment || 'All monitored process variables are currently within their expected operating boundaries.'}
+                    <div className="confidence-bar-bg">
+                      <div className="confidence-bar-fill unknown-fill" style={{ width: `${confidencePercent}%` }}></div>
+                    </div>
+                    <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                      🚨 <strong>DO NOT FORCE CLASSIFICATION:</strong> This multivariate sensor combination does not match any known failure class with safe confidence.
                     </p>
                   </div>
                 </div>
 
-                {/* WHY AI SAYS NORMAL (REASONING) */}
-                <div className="normal-card">
-                  <span className="step-label" style={{ color: 'var(--ai-cyan-hover)' }}>WHY AI SAYS NOMINAL</span>
-                  <p style={{ fontSize: '0.80rem', color: 'var(--text-muted)', lineHeight: '1.4', marginTop: '6px', margin: '6px 0 0' }}>
-                    {diagnosis.ai_reasoning || 'Current sensor patterns match baseline steady-state operation. Temperature gradients, vessel pressures, and vibration spectra remain nominal.'}
-                  </p>
+                <div className="unknown-card">
+                  <span className="step-label" style={{ color: 'var(--primary-blue)' }}>AI SAFETY GATE DIRECTIVE</span>
+                  <div className="safety-directive-box">
+                    <div className="safety-directive-title">🚨 DO NOT ACT AUTOMATICALLY</div>
+                    <p className="safety-directive-desc">
+                      Automatic action blocked. Cross-verify physical sensors, instrument calibrations, and manual valve positions before taking corrective intervention.
+                    </p>
+                  </div>
                 </div>
               </div>
+            </div>
+          )}
 
-              {/* KEY VARIABLES FROM LIVE SENSOR DATA */}
-              <div className="normal-card">
-                <span className="step-label">KEY TELEMETRY VARIABLES (LIVE STREAM)</span>
-                <div className="normal-vars-grid" style={{ marginTop: '8px' }}>
-                  {normalVariables.map((v, i) => (
-                    <div key={i} className="normal-var-box">
-                      <div className="normal-var-header">
-                        <span className="normal-var-name">{v.name}</span>
-                        <span className="normal-var-check">✓</span>
-                      </div>
-                      <div className="normal-var-val">{v.val}</div>
-                      <span className="normal-var-status">{v.status}</span>
+          {/* ========================================================================= */}
+          {/* SECTION B: MULTI-SECTION WORKFLOW (CONDITION, XAI, PROGNOSIS, RISK, ACTION) */}
+          {/* ========================================================================= */}
+          {!isUnknown && (
+            <div className="novelty-sections-grid">
+              {/* ROW 1: CURRENT CONDITION & DIAGNOSIS SUMMARY */}
+              <div className="novelty-card condition-card">
+                <div className="card-header-bar">
+                  <span className="step-label">1. CURRENT DIAGNOSTIC STATE</span>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <span className={`severity-badge ${getSeverityBadgeClass(diagnosis.severity)}`}>
+                      {isEarly ? 'EARLY WARNING' : `${diagnosis.severity} SEVERITY`}
+                    </span>
+                    <span className="confidence-pill numeric-data">
+                      {confidencePercent}% CONFIDENCE
+                    </span>
+                  </div>
+                </div>
+
+                <div className="diagnosis-summary-content">
+                  <div className="diag-equipment-name">
+                    {diagnosis.equipment} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>·</span> <span style={{ color: isAnomaly ? 'var(--sev-high-text)' : 'var(--sev-normal-text)' }}>{diagnosis.probable_fault}</span>
+                  </div>
+                  <p className="diag-narrative-text">
+                    "{diagnosis.pattern_narrative || diagnosis.assessment || 'Operating within nominal bounds.'}"
+                  </p>
+                </div>
+
+                <div className="evidence-metrics-mini-grid">
+                  {(diagnosis.evidence_cards || []).map((card, idx) => (
+                    <div key={idx} className={`evidence-metric-box ${card.isWarning ? 'warning' : 'nominal'}`}>
+                      <span className="box-label">{card.label}</span>
+                      <span className="box-val numeric-data">{card.val}</span>
+                      <span className="box-state">{card.state}</span>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* RECOMMENDED OPERATOR ACTION CARD */}
-              <div className="normal-card action-card-normal">
-                <span className="step-label" style={{ color: 'var(--primary-blue)' }}>RECOMMENDED OPERATOR ACTION</span>
-                <div style={{ marginTop: '4px', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                  <CheckCircle2 size={16} color="var(--primary-blue)" style={{ flexShrink: 0, marginTop: '2px' }} />
-                  <div>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#1E3A8A' }}>
-                      {diagnosis.recommended_action || 'Continue routine monitoring. System operating within nominal limits.'}
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: '#1E40AF', marginTop: '2px' }}>
-                      All physical and simulated units are operating within nominal baseline parameters.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            /* STATE B: WHEN A FAULT IS DETECTED (6-STEP VISUAL CHAIN) */
-            <div className="fault-state-panel">
-              {/* TOP FAULT BANNER */}
-              <div className="fault-hero-banner">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div className="fault-badge-pill">
-                    <ShieldAlert size={14} />
-                    <span>⚠ FAULT DETECTED</span>
-                  </div>
-                  <div className="fault-equipment-title">
-                    {evidence.unit} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>·</span> {evidence.faultTitle}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span className="confidence-pill">
-                    {confidencePercent}% CONFIDENCE
+              {/* ROW 2: XAI ROOT CAUSE ATTRIBUTION ("WHY DID AI DETECT THIS?") */}
+              <div className="novelty-card xai-card">
+                <div className="card-header-bar">
+                  <span className="step-label" style={{ color: 'var(--ai-cyan-hover)' }}>
+                    <BarChart3 size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                    2. XAI FEATURE ATTRIBUTION ("WHY DID AI DETECT THIS?")
                   </span>
-                  <div className={`severity-badge ${getSeverityBadgeClass(diagnosis.severity)}`}>
-                    {diagnosis.severity} SEVERITY
-                  </div>
-                  <button
-                    className="ask-ai-quick-btn fault-ask-btn"
-                    onClick={() => handleAskAiAbout(evidence.unit.toLowerCase())}
-                    title="Ask AI Copilot why this occurred"
-                  >
-                    <Sparkles size={12} />
-                    <span>Ask AI Why</span>
-                  </button>
+                </div>
+
+                <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                  Transparent breakdown of variable deviations contributing to the AI decision:
+                </p>
+
+                <div className="xai-bars-list">
+                  {xaiContributions.map((item, idx) => (
+                    <div key={idx} className="xai-bar-row">
+                      <div className="xai-bar-label-group">
+                        <span className="xai-feat-name">{item.label}</span>
+                        <span className={`xai-feat-change numeric-data ${item.isUp ? 'text-up' : 'text-down'}`}>
+                          {item.change}
+                        </span>
+                      </div>
+                      <div className="xai-bar-track">
+                        <div
+                          className={`xai-bar-fill ${item.isUp ? 'fill-up' : 'fill-down'}`}
+                          style={{ width: `${item.contributionPercent}%` }}
+                        ></div>
+                      </div>
+                      <span className="xai-percent-val numeric-data">{item.contributionPercent}%</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="root-cause-callout">
+                  <strong style={{ color: 'var(--text-main)', fontSize: '0.78rem' }}>Probable Root Cause (ML + Process Engineering):</strong>
+                  <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', margin: '2px 0 0' }}>
+                    {diagnosis.root_cause}
+                  </p>
                 </div>
               </div>
 
-              {/* 6-STEP EXPLAINABILITY WORKFLOW */}
-              <div className="steps-flow-container">
-                {/* STEP 1: DETECTION */}
-                <div className="flow-step-box step-detection">
-                  <div className="step-num-badge">1</div>
-                  <div className="step-content">
-                    <span className="step-title-text">DETECTION & CLASSIFICATION</span>
-                    <div className="detection-result-title">
-                      ANOMALY CONFIRMED: <span style={{ color: 'var(--sev-critical-text)' }}>{evidence.classification}</span>
-                    </div>
-                    <p className="detection-desc-text">{evidence.classificationDesc}</p>
+              {/* ROW 3: FAULT PROGRESSION & PROGNOSIS (5-STAGE PROGRESSION TRACKER) */}
+              <div className="novelty-card prognosis-card">
+                <div className="card-header-bar">
+                  <span className="step-label" style={{ color: '#7C3AED' }}>
+                    <TrendingUp size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                    3. FAULT PROGRESSION & PROGNOSIS
+                  </span>
+                </div>
+
+                {/* 5-Stage Visual Progress Bar */}
+                <div className="progression-stages-bar">
+                  {['NORMAL', 'EARLY_WARNING', 'DEVELOPING', 'HIGH_RISK', 'CRITICAL'].map((st, i) => {
+                    const isPassedOrActive =
+                      (riskStage === 'CRITICAL') ||
+                      (riskStage === 'HIGH_RISK' && i <= 3) ||
+                      (riskStage === 'DEVELOPING' && i <= 2) ||
+                      (riskStage === 'EARLY_WARNING' && i <= 1) ||
+                      (riskStage === 'NORMAL' && i === 0);
+
+                    const isActive = riskStage === st;
+
+                    return (
+                      <div key={st} className={`stage-step ${isPassedOrActive ? 'stage-reached' : ''} ${isActive ? 'stage-current' : ''}`}>
+                        <div className="stage-step-num numeric-data">{i + 1}</div>
+                        <span className="stage-step-name">{st.replace('_', ' ')}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="prognosis-info-box">
+                  <div className="prog-estimate-headline">
+                    {prognosis?.timeToThreshold || 'Operating nominally within design tolerances.'}
+                  </div>
+                  <p className="prog-narrative-text">
+                    {prognosis?.narrative || 'Continuous parameters are stable and within nominal operating envelopes.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* ROW 4: PREVENTIVE RISK SCORE & OPERATOR APPROVAL */}
+              <div className="novelty-card preventive-card">
+                <div className="card-header-bar">
+                  <span className="step-label" style={{ color: 'var(--primary-blue)' }}>
+                    <Wrench size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                    4. PREVENTIVE MEASURE & OPERATOR APPROVAL (HUMAN-IN-THE-LOOP)
+                  </span>
+                  <div className="risk-score-display-pill">
+                    <span>Preventive Risk:</span>
+                    <strong className="numeric-data" style={{ color: getRiskScoreColor(riskScore), fontSize: '0.95rem' }}>
+                      {riskScore} / 100
+                    </strong>
                   </div>
                 </div>
 
-                {/* STEP 2: EVIDENCE FROM LIVE DATA */}
-                <div className="flow-step-box step-evidence">
-                  <div className="step-num-badge" style={{ backgroundColor: '#EA580C' }}>2</div>
-                  <div className="step-content">
-                    <span className="step-title-text">EVIDENCE FROM LIVE DATA</span>
-                    
-                    <div className="evidence-cards-grid">
-                      {evidence.cards.map((card, idx) => (
-                        <div key={idx} className={`evidence-metric-card ${card.isWarning ? 'warning-border' : ''}`}>
-                          <span className="metric-card-label">{card.label}</span>
-                          <span className="metric-card-val">{card.val}</span>
-                          <span className={`metric-card-state ${card.isWarning ? 'state-warning' : 'state-nominal'}`}>
-                            {card.state}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="evidence-narrative-box">
-                      <span className="narrative-label">Pattern Match:</span>
-                      <span>"{evidence.patternNarrative}"</span>
-                    </div>
+                <div className="preventive-directive-box">
+                  <div className="preventive-measure-title">
+                    RECOMMENDED PREVENTIVE ACTION:
+                  </div>
+                  <div className="preventive-measure-text">
+                    "{diagnosis.recommended_action || 'Continue routine supervisory monitoring.'}"
                   </div>
                 </div>
 
-                {/* STEP 3: PROBABLE ROOT CAUSE */}
-                <div className="flow-step-box step-root-cause">
-                  <div className="step-num-badge" style={{ backgroundColor: 'var(--ai-cyan)' }}>3</div>
-                  <div className="step-content">
-                    <span className="step-title-text" style={{ color: 'var(--ai-cyan-hover)' }}>PROBABLE ROOT CAUSE</span>
-                    <div className="root-cause-hero-card">
-                      <div className="root-cause-hero-title">
-                        🔧 {diagnosis.root_cause.toUpperCase()}
-                      </div>
-                      <p className="root-cause-hero-desc">
-                        "{evidence.rootCauseExplanation}"
-                      </p>
-                    </div>
+                {/* Human-in-the-Loop Operator Authorization Button */}
+                <div className="operator-approval-bar">
+                  <div className="approval-status-info">
+                    <span className="approval-badge-label">
+                      {localApproved || diagnosis.operatorApproval?.approved
+                        ? '✓ OPERATOR APPROVED'
+                        : isAnomaly
+                        ? '⚠ OPERATOR APPROVAL REQUIRED'
+                        : 'ROUTINE SUPERVISION'}
+                    </span>
+                    <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>
+                      ChemDiag AI never executes automatic control commands. All preventive measures require manual operator authorization.
+                    </p>
                   </div>
+
+                  {isAnomaly && (
+                    <button
+                      className={`operator-approve-btn ${localApproved || diagnosis.operatorApproval?.approved ? 'approved' : ''}`}
+                      onClick={handleOperatorApproval}
+                      disabled={isApproving || localApproved || diagnosis.operatorApproval?.approved}
+                    >
+                      {localApproved || diagnosis.operatorApproval?.approved ? (
+                        <>
+                          <Check size={13} />
+                          <span>Action Authorized</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 size={13} />
+                          <span>{isApproving ? 'Recording...' : 'Approve Recommendation'}</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
 
-                {/* STEP 4 & 5: SEVERITY & CONFIDENCE (SPLIT ROW) */}
-                <div className="flow-split-row">
-                  {/* STEP 4: SEVERITY */}
-                  <div className="flow-step-box step-severity">
-                    <div className="step-num-badge" style={{ backgroundColor: '#DC2626' }}>4</div>
-                    <div className="step-content">
-                      <span className="step-title-text">SEVERITY ASSESSMENT</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
-                        <span className={`severity-badge-large ${getSeverityBadgeClass(diagnosis.severity)}`}>
-                          {diagnosis.severity}
-                        </span>
-                      </div>
-                      <p className="severity-reason-text">
-                        <strong>Why:</strong> {evidence.severityReason}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* STEP 5: MODEL CONFIDENCE */}
-                  <div className="flow-step-box step-confidence">
-                    <div className="step-num-badge" style={{ backgroundColor: 'var(--primary-blue)' }}>5</div>
-                    <div className="step-content">
-                      <span className="step-title-text">MODEL CONFIDENCE</span>
-                      <div className="confidence-display-group">
-                        <span className="confidence-large-number">
-                          {isLowConfidence ? 'LOW CONFIDENCE' : `${confidencePercent}%`}
-                        </span>
-                        <span className="confidence-subtext">
-                          Random Forest Ensemble: {confidencePercent}%
-                        </span>
-                      </div>
-                      <div className="confidence-bar-bg" style={{ marginTop: '4px' }}>
-                        <div className="confidence-bar-fill" style={{ width: `${confidencePercent}%` }}></div>
-                      </div>
-                      <span className="prototype-disclaimer-note">
-                        Validated against first-principles chemical engineering bounds.
-                      </span>
-                    </div>
-                  </div>
+                {/* Sensor Reliability Mini Bar */}
+                <div className="sensor-reliability-footer">
+                  <span>
+                    Sensor Reliability: <strong className="numeric-data" style={{ color: (diagnosis.sensorReliability?.score ?? 100) >= 75 ? '#10B981' : '#DC2626' }}>{diagnosis.sensorReliability?.score ?? 100}%</strong> · {diagnosis.sensorReliability?.statusText || 'ALL SENSORS VALID'}
+                  </span>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Operating Limits Enforced</span>
                 </div>
-
-                {/* STEP 6: RECOMMENDED OPERATOR ACTION */}
-                <div className="flow-step-box step-action">
-                  <div className="step-num-badge" style={{ backgroundColor: 'var(--primary-blue)' }}>6</div>
-                  <div className="step-content">
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span className="step-title-text" style={{ color: 'var(--primary-blue)' }}>
-                        RECOMMENDED OPERATOR ACTION
-                      </span>
-                      <span className="action-priority-badge">
-                        Priority: {evidence.priority}
-                      </span>
-                    </div>
-
-                    <div className="action-directive-card">
-                      <Wrench size={18} color="var(--primary-blue)" style={{ flexShrink: 0, marginTop: '2px' }} />
-                      <div>
-                        <div className="action-directive-text">
-                          {diagnosis.recommended_action}
-                        </div>
-                        <div className="action-directive-subtext">
-                          Operator directive generated dynamically from diagnosed root cause and process engineering heuristics.
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
               </div>
             </div>
           )}
         </>
       )}
 
-      {/* MODE 2: INTERACTIVE AI CHAT COPILOT */}
+      {/* MODE 2: INTERACTIVE GROUNDED INDUSTRIAL AI CHAT */}
       {activeTab === 'chat' && (
         <div style={{ padding: '14px 18px 16px' }}>
           <AiChatPanel
             selectedEquipment={chatEquipment}
             onClearSelectedEquipment={() => setChatEquipment(undefined)}
+            processContext={{
+              diagnosis,
+              equipment
+            }}
           />
         </div>
       )}

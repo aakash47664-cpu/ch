@@ -15,8 +15,9 @@
  *       ↓ Stream 05 (4.4 L/min, 76.5 °C, Reflux Return 8.1 L/min) -> TOP PRODUCT
  *       ↓ Stream 06 (5.2 L/min, 98.4 °C) -> BOTTOM PRODUCT
  * 
- * Changing upstream equipment (e.g. Pump RPM, Exchanger Efficiency, Cooling)
- * mathematically propagates through all downstream equipment and process streams.
+ * NOVELTY FEATURE: PROGRESSIVE FAULT SIMULATION
+ * Rather than binary jumps, faults smoothly progress across:
+ * NORMAL (0.0) -> EARLY DEGRADATION (0.2) -> DEVELOPING (0.4) -> HIGH RISK (0.6) -> CRITICAL (0.8+)
  */
 
 function clamp(val, min, max) {
@@ -29,8 +30,9 @@ function noise(magnitude = 0.02) {
 
 export class ProcessSimulator {
   constructor() {
-    this.currentFault = 'normal'; // 'normal' | 'pump_fault' | 'heat_exchanger_fault' | 'reactor_cooling_failure' | 'distillation_fault'
+    this.currentFault = 'normal'; // 'normal' | 'early_pump_degradation' | 'pump_fault' | 'early_heat_exchanger_fouling' | 'heat_exchanger_fault' | 'early_reactor_cooling_degradation' | 'reactor_cooling_failure' | 'early_distillation_reflux_loss' | 'distillation_fault' | 'unknown_fault'
     this.faultTicks = 0; // seconds elapsed in current fault state
+    this.faultSeverity = 0.0; // 0.0 to 1.0 continuous degradation variable
 
     // Manual control overrides from flowsheet UI
     this.manualOverrides = {
@@ -52,7 +54,8 @@ export class ProcessSimulator {
       inlet_temperature: 25.2,
       outlet_temperature: 38.1,
       pressure: 2.80,
-      status: 'NORMAL'
+      status: 'NORMAL',
+      health: 100
     };
 
     this.heatExchanger = {
@@ -61,7 +64,8 @@ export class ProcessSimulator {
       outlet_temperature: 38.1,
       temperature_difference: 12.9, // °C
       heat_transfer_indicator: 95.0,
-      status: 'NORMAL'
+      status: 'NORMAL',
+      health: 100
     };
 
     this.reactor = {
@@ -70,7 +74,8 @@ export class ProcessSimulator {
       level: 50.0,       // %
       agitator_speed: 350, // RPM
       cooling_status: 1, // 1 = ON, 0 = OFF
-      status: 'NORMAL'
+      status: 'NORMAL',
+      health: 100
     };
 
     this.distillation = {
@@ -79,7 +84,8 @@ export class ProcessSimulator {
       pressure: 2.10,           // bar
       level: 52.0,              // %
       reflux_ratio: 1.85,       // L/D
-      status: 'NORMAL'
+      status: 'NORMAL',
+      health: 100
     };
 
     // Streams
@@ -112,7 +118,8 @@ export class ProcessSimulator {
     console.log(` Simulator fault mode switched to: ${fault}`);
     this.currentFault = fault;
     this.faultTicks = 0;
-    this.resetControls(); // Clear manual overrides when changing demo fault mode
+    this.faultSeverity = 0.0;
+    this.resetControls();
   }
 
   getFault() {
@@ -123,11 +130,39 @@ export class ProcessSimulator {
     return this.faultTicks;
   }
 
-  // 1-second simulation tick advancing coupled physical equations
+  getFaultSeverity() {
+    return this.faultSeverity;
+  }
+
+  // 1-second simulation tick advancing coupled physical equations and progressive degradation
   tick() {
     this.faultTicks++;
     const fault = this.currentFault;
     const t = this.faultTicks;
+
+    // -------------------------------------------------------------------------
+    // PROGRESSIVE DEGRADATION DYNAMICS (Smooth faultSeverity Ramp)
+    // -------------------------------------------------------------------------
+    if (fault === 'normal') {
+      this.faultSeverity = Math.max(0.0, this.faultSeverity - 0.1);
+    } else if (fault.startsWith('early_')) {
+      // Early degradation targets ~0.25 max severity
+      const targetSev = 0.24;
+      this.faultSeverity += (targetSev - this.faultSeverity) * 0.25;
+      this.faultSeverity = clamp(this.faultSeverity, 0.0, 0.32);
+    } else if (fault === 'unknown_fault') {
+      // Unknown fault stabilizes around moderate anomaly (severity ~0.45)
+      const targetSev = 0.45;
+      this.faultSeverity += (targetSev - this.faultSeverity) * 0.3;
+      this.faultSeverity = clamp(this.faultSeverity, 0.0, 0.55);
+    } else {
+      // Confirmed fault progressively ramps: 0.0 -> 0.35 -> 0.70 -> 0.95 over ~12 ticks
+      const targetSev = Math.min(1.0, 0.20 + (t / 10) * 0.80);
+      this.faultSeverity += (targetSev - this.faultSeverity) * 0.35;
+      this.faultSeverity = clamp(this.faultSeverity, 0.0, 1.0);
+    }
+
+    const s = this.faultSeverity;
 
     // =========================================================================
     // 1. P-101 PUMP DYNAMICS & FLOW GENERATION
@@ -138,18 +173,19 @@ export class ProcessSimulator {
     if (this.manualOverrides.pump_rpm !== null) {
       targetRpm = this.manualOverrides.pump_rpm;
       targetVib = targetRpm < 2000 ? 0.35 : 0.08;
+    } else if (fault === 'early_pump_degradation') {
+      // Early Pump Degradation: Vibration 0.18-0.26g, RPM 2150-2300, Flow 7.5-8.5 L/min
+      targetRpm = 2450 - s * (2450 - 2150); // ~2250 RPM
+      targetVib = 0.08 + s * (0.28 - 0.08); // ~0.24 g
     } else if (fault === 'pump_fault') {
-      if (t <= 3) {
-        targetRpm = 2450;
-        targetVib = 0.08;
-      } else if (t <= 8) {
-        const p = (t - 3) / 5;
-        targetRpm = 2450 - p * (2450 - 1700); // 2450 -> 1700 RPM
-        targetVib = 0.08 + p * (0.62 - 0.08); // 0.08 -> 0.62 g
-      } else {
-        targetRpm = 1680;
-        targetVib = 0.62;
-      }
+      // Progressive Pump Mechanical Fault:
+      // Normal (2450, 0.08g) -> Early (2200, 0.24g) -> Developing (1950, 0.36g) -> High (1750, 0.46g) -> Critical (<1600, >0.55g)
+      targetRpm = 2450 - s * (2450 - 1580);
+      targetVib = 0.08 + s * (0.64 - 0.08);
+    } else if (fault === 'unknown_fault') {
+      // Intentionally unseen combination: slightly reduced RPM + moderate abnormal vibration
+      targetRpm = 2450 - s * (2450 - 2250); // ~2350 RPM
+      targetVib = 0.08 + s * (0.34 - 0.08); // ~0.28 g
     } else if (this.externalHardwareState && this.externalHardwareState.isConnected) {
       // Feed live ESP32 hardware values
       targetRpm = this.externalHardwareState.rpm;
@@ -157,7 +193,7 @@ export class ProcessSimulator {
     }
 
     // Smooth RPM & Vibration convergence
-    this.pump.rpm += (targetRpm - this.pump.rpm) * 0.4 + noise(8);
+    this.pump.rpm += (targetRpm - this.pump.rpm) * 0.4 + noise(6);
     this.pump.vibration += (targetVib - this.pump.vibration) * 0.4 + noise(0.008);
 
     this.pump.rpm = Math.round(clamp(this.pump.rpm, 600, 3200));
@@ -168,26 +204,24 @@ export class ProcessSimulator {
     this.pump.flow = Number(clamp(baseFlow + noise(0.08), 1.0, 15.0).toFixed(1));
 
     this.pump.inlet_temperature = Number((25.2 + noise(0.05)).toFixed(1));
-    this.pump.outlet_temperature = Number((this.pump.inlet_temperature + 12.9 * (this.pump.rpm / 2450) + (this.pump.vibration > 0.25 ? 4.5 : 0) + noise(0.1)).toFixed(1));
+    this.pump.outlet_temperature = Number((this.pump.inlet_temperature + 12.9 * (this.pump.rpm / 2450) + (this.pump.vibration > 0.25 ? 4.5 * s : 0) + noise(0.1)).toFixed(1));
     this.pump.pressure = Number((1.01 + 1.79 * (this.pump.rpm / 2450) + noise(0.02)).toFixed(2));
-    this.pump.status = this.pump.vibration > 0.25 || this.pump.rpm < 2000 ? 'ABNORMAL' : 'NORMAL';
+    this.pump.health = Math.max(0, Math.round(100 - (this.pump.vibration > 0.20 ? (this.pump.vibration - 0.08) * 160 : 0)));
+    this.pump.status = this.pump.vibration > 0.45 ? 'CRITICAL' : (this.pump.vibration > 0.22 ? 'ABNORMAL' : (this.pump.vibration > 0.16 ? 'EARLY_WARNING' : 'NORMAL'));
 
     // =========================================================================
-    // 2. E-101 HEAT EXCHANGER (Coupled to Pump Flow & Efficiency)
+    // 2. E-101 HEAT EXCHANGER (Coupled to Pump Flow & Progressive Fouling)
     // =========================================================================
     let targetEfficiency = 95.0; // %
 
     if (this.manualOverrides.heat_exchanger_efficiency !== null) {
       targetEfficiency = this.manualOverrides.heat_exchanger_efficiency;
+    } else if (fault === 'early_heat_exchanger_fouling') {
+      // Early fouling: Efficiency 65-75%, ΔT 4.5-6.0°C
+      targetEfficiency = 95.0 - s * (95.0 - 68.0);
     } else if (fault === 'heat_exchanger_fault') {
-      if (t <= 3) {
-        targetEfficiency = 95.0;
-      } else if (t <= 10) {
-        const p = (t - 3) / 7;
-        targetEfficiency = 95.0 - p * (95.0 - 24.0); // 95% -> 24%
-      } else {
-        targetEfficiency = 24.0;
-      }
+      // Progressive Fouling: 95% -> 65% -> 52% -> 42% -> 24%
+      targetEfficiency = 95.0 - s * (95.0 - 24.0);
     }
 
     this.heatExchanger.efficiency += (targetEfficiency - this.heatExchanger.efficiency) * 0.4 + noise(0.3);
@@ -204,12 +238,12 @@ export class ProcessSimulator {
 
     this.heatExchanger.outlet_temperature = Number((this.heatExchanger.inlet_temperature - this.heatExchanger.temperature_difference + 12.9 + noise(0.1)).toFixed(1));
     this.heatExchanger.heat_transfer_indicator = Number(clamp(this.heatExchanger.efficiency * flowFactor, 10.0, 100.0).toFixed(1));
-    this.heatExchanger.status = this.heatExchanger.temperature_difference < 5.0 || this.heatExchanger.efficiency < 50.0 ? 'ABNORMAL' : 'NORMAL';
+    this.heatExchanger.health = Math.max(0, Math.round((this.heatExchanger.efficiency / 95.0) * 100));
+    this.heatExchanger.status = this.heatExchanger.temperature_difference < 2.5 ? 'CRITICAL' : (this.heatExchanger.temperature_difference < 5.0 ? 'ABNORMAL' : (this.heatExchanger.temperature_difference < 6.5 ? 'EARLY_WARNING' : 'NORMAL'));
 
     // =========================================================================
-    // 3. R-101 CSTR REACTOR (Coupled to E-101 Effluent Flow & Temperature)
+    // 3. R-101 CSTR REACTOR (Coupled to E-101 Effluent & Progressive Cooling Loss)
     // =========================================================================
-    // Feed from E-101
     const reactorFeedFlow = this.pump.flow;
     const reactorFeedTemp = this.heatExchanger.outlet_temperature;
 
@@ -218,8 +252,10 @@ export class ProcessSimulator {
 
     if (this.manualOverrides.cooling_status !== null) {
       targetCooling = this.manualOverrides.cooling_status;
+    } else if (fault === 'early_reactor_cooling_degradation') {
+      targetCooling = 1; // Cooling still nominally on, but degraded heat dissipation
     } else if (fault === 'reactor_cooling_failure') {
-      targetCooling = t > 2 ? 0 : 1;
+      targetCooling = s > 0.25 ? 0 : 1;
     }
 
     if (this.manualOverrides.agitator_speed !== null) {
@@ -230,11 +266,24 @@ export class ProcessSimulator {
     this.reactor.agitator_speed += (targetAgitator - this.reactor.agitator_speed) * 0.4 + noise(2);
     this.reactor.agitator_speed = Math.round(clamp(this.reactor.agitator_speed, 0, 450));
 
-    if (this.reactor.cooling_status === 0) {
-      // Cooling OFF: Exothermic Arrhenius temperature surge & Antoine vapor pressure
-      const progress = Math.min(1.0, (t > 2 ? (t - 2) : 1) / 10);
-      const runawayTemp = 65.0 + progress * (94.0 - 65.0);
-      const runawayPress = 2.05 + progress * (3.80 - 2.05);
+    if (fault === 'early_reactor_cooling_degradation') {
+      // Early cooling degradation: Temp 70-76°C, Pressure 2.2-2.45 bar
+      const nominalReactorTemp = 65.0 + s * (76.0 - 65.0);
+      const nominalReactorPress = 2.05 + s * (2.42 - 2.05);
+
+      this.reactor.temperature += (nominalReactorTemp - this.reactor.temperature) * 0.4 + noise(0.12);
+      this.reactor.pressure += (nominalReactorPress - this.reactor.pressure) * 0.4 + noise(0.015);
+    } else if (fault === 'unknown_fault') {
+      // Intentionally unseen: Moderately high temperature (~75°C) and moderately high pressure (~2.4 bar)
+      const nominalReactorTemp = 65.0 + s * (76.5 - 65.0);
+      const nominalReactorPress = 2.05 + s * (2.45 - 2.05);
+
+      this.reactor.temperature += (nominalReactorTemp - this.reactor.temperature) * 0.4 + noise(0.12);
+      this.reactor.pressure += (nominalReactorPress - this.reactor.pressure) * 0.4 + noise(0.015);
+    } else if (this.reactor.cooling_status === 0 || fault === 'reactor_cooling_failure') {
+      // Progressive runaway: 65°C -> 72°C -> 78°C -> 86°C -> 94°C
+      const runawayTemp = 65.0 + s * (94.0 - 65.0);
+      const runawayPress = 2.05 + s * (3.80 - 2.05);
 
       this.reactor.temperature += (runawayTemp - this.reactor.temperature) * 0.4 + noise(0.2);
       this.reactor.pressure += (runawayPress - this.reactor.pressure) * 0.4 + noise(0.02);
@@ -252,10 +301,11 @@ export class ProcessSimulator {
     this.reactor.temperature = Number(clamp(this.reactor.temperature, 45.0, 115.0).toFixed(1));
     this.reactor.pressure = Number(clamp(this.reactor.pressure, 1.20, 5.50).toFixed(2));
     this.reactor.level = Number(clamp(50.0 + (reactorFeedFlow - 10.0) * 1.5 + noise(0.2), 25.0, 85.0).toFixed(1));
-    this.reactor.status = this.reactor.cooling_status === 0 || this.reactor.temperature > 78.0 || this.reactor.pressure > 2.60 ? 'CRITICAL' : 'NORMAL';
+    this.reactor.health = Math.max(0, Math.round(100 - (this.reactor.temperature > 65.0 ? (this.reactor.temperature - 65.0) * 3.5 : 0)));
+    this.reactor.status = this.reactor.temperature > 85.0 || this.reactor.pressure > 3.0 ? 'CRITICAL' : (this.reactor.temperature > 74.0 ? 'ABNORMAL' : (this.reactor.temperature > 69.0 ? 'EARLY_WARNING' : 'NORMAL'));
 
     // =========================================================================
-    // 4. D-101 DISTILLATION COLUMN (Coupled to R-101 Effluent Temp & Reflux Ratio)
+    // 4. D-101 DISTILLATION COLUMN (Coupled to R-101 & Progressive Reflux Decay)
     // =========================================================================
     const distFeedFlow = reactorFeedFlow;
     const distFeedTemp = this.reactor.temperature;
@@ -264,23 +314,20 @@ export class ProcessSimulator {
 
     if (this.manualOverrides.reflux_ratio !== null) {
       targetReflux = this.manualOverrides.reflux_ratio;
+    } else if (fault === 'early_distillation_reflux_loss') {
+      // Early reflux loss: Reflux 1.50 -> 1.30, Top temp 77.5 - 79.0°C
+      targetReflux = 1.85 - s * (1.85 - 1.30);
     } else if (fault === 'distillation_fault') {
-      if (t <= 4) {
-        targetReflux = 1.85;
-      } else if (t <= 12) {
-        const p = (t - 4) / 8;
-        targetReflux = 1.85 - p * (1.85 - 0.65); // 1.85 -> 0.65
-      } else {
-        targetReflux = 0.65;
-      }
+      // Progressive reflux starvation: 1.85 -> 1.45 -> 1.10 -> 0.85 -> 0.60
+      targetReflux = 1.85 - s * (1.85 - 0.60);
     }
 
     this.distillation.reflux_ratio += (targetReflux - this.distillation.reflux_ratio) * 0.4 + noise(0.02);
     this.distillation.reflux_ratio = Number(clamp(this.distillation.reflux_ratio, 0.35, 4.0).toFixed(2));
 
     // Separation dynamics: Lower reflux OR higher feed temp -> Top Temp rises, Pressure rises
-    const refluxLossEffect = (1.85 - this.distillation.reflux_ratio) * 6.5; // up to +8°C if reflux drops to 0.65
-    const reactorTempThermalEffect = (distFeedTemp - 65.0) * 0.18; // if reactor surges, overhead temp also rises!
+    const refluxLossEffect = (1.85 - this.distillation.reflux_ratio) * 6.5;
+    const reactorTempThermalEffect = (distFeedTemp - 65.0) * 0.18;
 
     const nominalTopTemp = 76.5 + refluxLossEffect + reactorTempThermalEffect;
     const nominalBottomTemp = 98.4 + (distFeedTemp - 65.0) * 0.12;
@@ -294,7 +341,8 @@ export class ProcessSimulator {
     this.distillation.top_temperature = Number(clamp(this.distillation.top_temperature, 55.0, 95.0).toFixed(1));
     this.distillation.bottom_temperature = Number(clamp(this.distillation.bottom_temperature, 85.0, 115.0).toFixed(1));
     this.distillation.pressure = Number(clamp(this.distillation.pressure, 1.20, 3.80).toFixed(2));
-    this.distillation.status = this.distillation.reflux_ratio < 1.1 || this.distillation.top_temperature > 80.0 || this.distillation.pressure > 2.50 ? 'ABNORMAL' : 'NORMAL';
+    this.distillation.health = Math.max(0, Math.round(100 - (this.distillation.reflux_ratio < 1.85 ? (1.85 - this.distillation.reflux_ratio) * 80 : 0)));
+    this.distillation.status = this.distillation.reflux_ratio < 0.75 || this.distillation.top_temperature > 84.0 ? 'CRITICAL' : (this.distillation.reflux_ratio < 1.15 ? 'ABNORMAL' : (this.distillation.reflux_ratio < 1.50 ? 'EARLY_WARNING' : 'NORMAL'));
 
     // =========================================================================
     // 5. CALCULATE PROCESS STREAMS (01 through 06)
@@ -390,13 +438,14 @@ export class ProcessSimulator {
       timestamp: new Date().toISOString(),
       current_fault: this.currentFault,
       fault_ticks: this.faultTicks,
+      fault_severity: Number(this.faultSeverity.toFixed(3)),
       manual_overrides: { ...this.manualOverrides },
       pump: { ...this.pump },
       heatExchanger: { ...this.heatExchanger },
       reactor: { ...this.reactor },
       distillation: { ...this.distillation },
       streams: { ...this.streams },
-      // Backward compatibility aliases for existing backend models
+      // Backward compatibility aliases
       demoPump: {
         rpm: this.pump.rpm,
         vibration: this.pump.vibration,

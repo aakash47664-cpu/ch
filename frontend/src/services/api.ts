@@ -30,6 +30,16 @@ export async function setDemoFault(fault: FaultMode) {
   return res.json();
 }
 
+export async function approveOperatorRecommendation(note: string = '') {
+  const res = await fetch(`${API_BASE}/diagnosis/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note })
+  });
+  if (!res.ok) throw new Error('Failed to approve operator recommendation');
+  return res.json();
+}
+
 export async function fetchSystemStatus() {
   const res = await fetch(`${API_BASE}/status`);
   if (!res.ok) throw new Error('Failed to fetch system status');
@@ -39,15 +49,24 @@ export async function fetchSystemStatus() {
 export async function sendAiChatMessage(
   message: string,
   history: ChatMessage[] = [],
-  equipment?: string
+  equipment?: string,
+  processContext?: any
 ): Promise<ChatResponse> {
   const res = await fetch(`${API_BASE}/ai/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       message,
+      conversation: history.map(h => ({
+        sender: h.sender,
+        role: h.sender === 'user' ? 'user' : 'assistant',
+        text: h.text,
+        content: h.text
+      })),
       history: history.map(h => ({ sender: h.sender, text: h.text })),
-      equipment
+      selectedEquipment: equipment,
+      equipment,
+      processContext
     })
   });
   if (!res.ok) {
@@ -81,4 +100,3 @@ export async function resetSimulatorControls() {
   if (!res.ok) throw new Error('Failed to reset process controls');
   return res.json();
 }
-

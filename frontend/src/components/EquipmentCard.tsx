@@ -217,7 +217,7 @@ export const EquipmentCardsGrid: React.FC<EquipmentCardsGridProps> = ({
               <button
                 className="card-ask-ai-btn"
                 onClick={() => onAskAiAbout('pump')}
-                title="Ask AI Copilot about P-101"
+                title="Ask Industrial AI about P-101"
               >
                 <Sparkles size={11} />
                 <span>Ask AI</span>
@@ -290,7 +290,7 @@ export const EquipmentCardsGrid: React.FC<EquipmentCardsGridProps> = ({
               <button
                 className="card-ask-ai-btn"
                 onClick={() => onAskAiAbout('heat_exchanger')}
-                title="Ask AI Copilot about E-102"
+                title="Ask Industrial AI about E-102"
               >
                 <Sparkles size={11} />
                 <span>Ask AI</span>
@@ -363,7 +363,7 @@ export const EquipmentCardsGrid: React.FC<EquipmentCardsGridProps> = ({
               <button
                 className="card-ask-ai-btn"
                 onClick={() => onAskAiAbout('reactor')}
-                title="Ask AI Copilot about R-201"
+                title="Ask Industrial AI about R-201"
               >
                 <Sparkles size={11} />
                 <span>Ask AI</span>
@@ -446,7 +446,7 @@ export const EquipmentCardsGrid: React.FC<EquipmentCardsGridProps> = ({
               <button
                 className="card-ask-ai-btn"
                 onClick={() => onAskAiAbout('distillation')}
-                title="Ask AI Copilot about T-301"
+                title="Ask Industrial AI about T-301"
               >
                 <Sparkles size={11} />
                 <span>Ask AI</span>

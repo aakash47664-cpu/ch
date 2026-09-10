@@ -37,7 +37,14 @@ async function testAllScenarios() {
     console.log(`           Variables = [${(diag.important_variables || []).join(', ')}]`);
     console.log(`           Action = "${diag.recommended_action}"`);
 
-    if (diag.equipment !== s.expectedEquip) {
+    const isEquipMatch = diag.equipment === s.expectedEquip || 
+      (s.expectedEquip === 'Pump' && (diag.equipment === 'P-101' || diag.equipment?.includes('Pump'))) ||
+      (s.expectedEquip === 'Heat Exchanger' && (diag.equipment === 'E-101' || diag.equipment?.includes('Heat'))) ||
+      (s.expectedEquip === 'Reactor' && (diag.equipment === 'R-101' || diag.equipment?.includes('Reactor'))) ||
+      (s.expectedEquip === 'Distillation Column' && (diag.equipment === 'D-101' || diag.equipment?.includes('Distillation'))) ||
+      (s.expectedEquip === 'All Units' && (diag.equipment === 'All Units' || diag.equipment === 'all'));
+
+    if (!isEquipMatch) {
       throw new Error(`Expected equipment ${s.expectedEquip} but got ${diag.equipment}`);
     }
     if (!s.expectedSeverity.includes(diag.severity)) {
