@@ -8,6 +8,7 @@
  */
 
 import { Groq } from 'groq-sdk';
+import { ENGINEERING_TOOL_DEFINITIONS, executeEngineeringTool } from '../engineering/index.js';
 
 /**
  * Returns whether GROQ_API_KEY is configured in the environment
@@ -26,13 +27,14 @@ export function getGroqHealth() {
     provider: 'Groq',
     configured,
     status: configured ? 'ONLINE' : 'UNCONFIGURED',
-    model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
+    model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+    calculationEngine: 'ACTIVE'
   };
 }
 
 /**
  * Builds system prompt combining universal conversational capability,
- * deep engineering expertise, and optional ChemDiag process telemetry.
+ * deep engineering expertise, deterministic calculation tools, and optional ChemDiag process telemetry.
  */
 function buildSystemPrompt(liveState, processContext) {
   let plantContextSection = '';
@@ -66,18 +68,18 @@ Current Telemetry:
 
   return `You are ChemDiag Industrial AI, an expert, highly capable conversational assistant with world-class knowledge in chemical engineering, process operations, instrumentation, control systems, and thermodynamics.
 
-CORE CONVERSATIONAL RULES:
-1. Answer the user's actual question directly, accurately, and naturally.
-2. Continuous Conversational Context: Always maintain and use the recent conversation history to interpret follow-up questions, pronouns ("it", "that", "this"), and topic continuations (e.g., "why does it oscillate?", "how would I fix that?", "what if the process has a large dead time?", "what causes it?", "what should I check first?").
-3. Seamless Topic Switching: If the user changes topics (e.g., "Okay forget PID. Explain compressor surge"), naturally pivot to the new topic and interpret subsequent follow-ups in that new context.
-4. Selective Plant Context: You have optional background telemetry from the live ChemDiag plant simulation below. Use this data ONLY when the user asks about the live process, plant status, or specific equipment (e.g., "Could my pump have it?", "Check P-101", "Why is the reactor hot?").
-5. Do NOT force unrelated questions (e.g., "Why is the sky blue?", general PID theory, compressor surge theory) into an industrial plant/telemetry context.
-6. Do NOT invent sensor numbers or make up equipment that does not exist. Adapt technical depth to the user's request.
+CORE CAPABILITIES & CONVERSATIONAL RULES:
+1. Universal Engineering Intelligence: Answer the user's actual question directly, accurately, and naturally across chemical, mechanical, electrical, and process engineering.
+2. Real Deterministic Calculation Tools: You have access to precise engineering calculation functions for fluid mechanics (velocity, Reynolds, pressure drop, pump power, NPSH), heat transfer (sensible duty Q = m·Cp·ΔT, LMTD, exchanger area, conduction), thermodynamics (ideal gas, compressor power, Carnot efficiency), reaction engineering (Arrhenius, conversion, residence time, CSTR sizing), mass transfer (Fenske stages, minimum reflux), process control (PID error, PID output), and equipment (control valve Cv, tanks).
+3. Tool Usage & Calculation Transparency: Whenever a user requests an engineering calculation or provides numbers, invoke the appropriate calculation tool to compute the exact result. When presenting the calculation, explain the Given values, Governing Equation, Substitution, Computed Result with Units, Assumptions, and Engineering Interpretation clearly and naturally.
+4. Continuous Conversational Context: Maintain conversation history across turns. When the user asks follow-up questions (e.g. "Why did you divide by 3600?", "What if the diameter becomes 50 mm?", "How does that affect pressure drop?", "Why does it oscillate?", "How would I fix that?"), interpret them in the context of the ongoing discussion without requiring repetition.
+5. Seamless Topic Switching: If the user changes topics (e.g. "Okay forget PID. Explain compressor surge"), naturally pivot to the new topic.
+6. Selective Plant Context: You have optional background telemetry from the live ChemDiag plant simulation below. Use this data ONLY when the user asks about the live process, plant status, or specific equipment (e.g. "Estimate the hydraulic power of my current pump", "Check P-101", "Why is the reactor hot?"). Do NOT force unrelated queries into plant context.
 ${plantContextSection}`;
 }
 
 /**
- * Sends chat request to Groq Cloud API
+ * Sends chat request to Groq Cloud API with Tool Calling support
  */
 export async function chatWithGroq({
   message,
@@ -91,8 +93,6 @@ export async function chatWithGroq({
   }
 
   const actualUserMessage = String(message || '').trim();
-
-  // Safe dev log for verifying message flow (never logs keys/secrets)
   console.log("CHEMDIAG GROQ USER MESSAGE:", actualUserMessage);
 
   const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
@@ -100,7 +100,7 @@ export async function chatWithGroq({
 
   // Format conversation history for Groq / OpenAI messages format
   const formattedHistory = (conversation || [])
-    .slice(-14) // Keep recent 14 turns for rich multi-turn context
+    .slice(-14)
     .filter(turn => turn && (turn.content || turn.text || turn.message))
     .map(turn => ({
       role: (turn.role === 'user' || turn.sender === 'user') ? 'user' : 'assistant',
@@ -125,21 +125,67 @@ export async function chatWithGroq({
   try {
     const groq = new Groq({ apiKey });
 
-    const completion = await groq.chat.completions.create({
+    let completion = await groq.chat.completions.create({
       model,
       messages,
-      temperature: 0.25,
+      tools: ENGINEERING_TOOL_DEFINITIONS,
+      tool_choice: 'auto',
+      temperature: 0.2,
       max_tokens: 1024
     });
 
-    const reply = completion.choices?.[0]?.message?.content?.trim();
+    let choice = completion.choices?.[0];
+    let toolCalls = choice?.message?.tool_calls;
+
+    // Handle Groq Tool Calling
+    if (toolCalls && toolCalls.length > 0) {
+      console.log(`CHEMDIAG GROQ INVOKING CALCULATION TOOLS: ${toolCalls.map(t => t.function.name).join(', ')}`);
+      
+      messages.push(choice.message);
+
+      for (const toolCall of toolCalls) {
+        try {
+          const toolResult = await executeEngineeringTool(
+            toolCall.function.name,
+            toolCall.function.arguments,
+            liveState || processContext
+          );
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            name: toolCall.function.name,
+            content: JSON.stringify(toolResult)
+          });
+        } catch (toolErr) {
+          console.warn(`Error executing tool ${toolCall.function.name}:`, toolErr.message);
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            name: toolCall.function.name,
+            content: JSON.stringify({ success: false, error: toolErr.message })
+          });
+        }
+      }
+
+      // Re-invoke Groq to formulate natural engineering response with calculation results
+      const finalCompletion = await groq.chat.completions.create({
+        model,
+        messages,
+        temperature: 0.2,
+        max_tokens: 1024
+      });
+
+      const finalReply = finalCompletion.choices?.[0]?.message?.content?.trim();
+      if (finalReply) return finalReply;
+    }
+
+    const reply = choice?.message?.content?.trim();
     if (!reply) {
       throw new Error('Empty response received from Groq API');
     }
 
     return reply;
   } catch (sdkError) {
-    // Fallback: direct HTTPS fetch to Groq REST endpoint
     console.warn('Groq SDK call error, trying direct HTTPS fetch fallback:', sdkError.message);
 
     const controller = new AbortController();
@@ -155,7 +201,9 @@ export async function chatWithGroq({
         body: JSON.stringify({
           model,
           messages,
-          temperature: 0.25,
+          tools: ENGINEERING_TOOL_DEFINITIONS,
+          tool_choice: 'auto',
+          temperature: 0.2,
           max_tokens: 1024
         }),
         signal: controller.signal
@@ -169,7 +217,52 @@ export async function chatWithGroq({
       }
 
       const data = await fetchRes.json();
-      const reply = data.choices?.[0]?.message?.content?.trim();
+      const choice = data.choices?.[0];
+      const toolCalls = choice?.message?.tool_calls;
+
+      if (toolCalls && toolCalls.length > 0) {
+        messages.push(choice.message);
+        for (const toolCall of toolCalls) {
+          try {
+            const toolResult = await executeEngineeringTool(
+              toolCall.function.name,
+              toolCall.function.arguments,
+              liveState || processContext
+            );
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolCall.function.name,
+              content: JSON.stringify(toolResult)
+            });
+          } catch (toolErr) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolCall.function.name,
+              content: JSON.stringify({ success: false, error: toolErr.message })
+            });
+          }
+        }
+
+        const secondRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.2,
+            max_tokens: 1024
+          })
+        });
+        const secondData = await secondRes.json();
+        return secondData.choices?.[0]?.message?.content?.trim() || 'Calculation completed successfully.';
+      }
+
+      const reply = choice?.message?.content?.trim();
       if (!reply) {
         throw new Error('Empty response received from Groq REST endpoint');
       }
