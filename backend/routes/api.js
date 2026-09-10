@@ -309,15 +309,14 @@ export function createApiRouter({
         processContext = null
       } = req.body;
 
-      // Safe dev log for verifying message flow
-      console.log("CHEMDIAG RECEIVED MESSAGE:", req.body.message);
-
       if (!message || typeof message !== 'string' || !message.trim()) {
         return res.status(400).json({ success: false, error: 'Message string is required' });
       }
 
       const actualUserMessage = message.trim();
-      const rawConversation = conversation.length > 0 ? conversation : history;
+      const rawConversation = (Array.isArray(conversation) && conversation.length > 0)
+        ? conversation
+        : (Array.isArray(history) ? history : []);
 
       // Clean conversation history and ensure current user message is not duplicated in history
       const cleanConversation = rawConversation
@@ -334,6 +333,11 @@ export function createApiRouter({
       ) {
         cleanConversation.pop();
       }
+
+      // Safe dev logs for verifying conversation context flow (never logs keys/secrets)
+      console.log("Conversation messages received:", cleanConversation.length);
+      console.log("Current user message:", actualUserMessage);
+      console.log("Last conversation role:", cleanConversation[cleanConversation.length - 1]?.role);
 
       const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
       const activeFault = simulator.getFault();

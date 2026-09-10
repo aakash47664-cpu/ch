@@ -39,6 +39,7 @@ export function getEquipmentContext(query = '', selectedEquipment = null, histor
     q.includes('entropy') ||
     q.includes('thermodynamics') ||
     q.includes('pid') ||
+    q.includes('tuning') ||
     q.includes('compare') ||
     (q.includes('all') && q.includes('equipment')) ||
     (q.includes('process') && (q.includes('summary') || q.includes('status') || q.includes('overview') || q.includes('normal')))
@@ -65,8 +66,8 @@ export function getEquipmentContext(query = '', selectedEquipment = null, histor
   if (hasPronounRef && history && history.length > 0) {
     for (let i = history.length - 1; i >= 0; i--) {
       const histText = (history[i].text || history[i].content || history[i].message || '').toLowerCase();
-      // If the immediate preceding turn was about compressors or general theory, don't latch to an old equipment
-      if (histText.includes('compressor') || histText.includes('surge') || histText.includes('entropy')) {
+      // If the immediate preceding turn was about compressors, PID, or general theory, don't latch to an old equipment
+      if (histText.includes('compressor') || histText.includes('surge') || histText.includes('entropy') || histText.includes('pid') || histText.includes('tuning')) {
         return null;
       }
       for (const [key, aliases] of Object.entries(EQUIPMENT_ALIASES)) {
@@ -233,23 +234,81 @@ export function answerProcessQuestion({
     else if (liveState.activeFault?.includes('heat')) detectedEquip = 'heat_exchanger';
   }
 
-  // Check recent conversation turns for topic resolution ONLY when current query is a short follow-up or pronoun
-  const recentUserTurnsList = (history || [])
-    .filter(h => h.sender === 'user' || h.role === 'user');
-  const lastUserTurnObj = recentUserTurnsList.slice(-1)[0];
-  const lastUserTurn = (lastUserTurnObj?.text || lastUserTurnObj?.content || lastUserTurnObj?.message || '').toLowerCase();
+  // Extract recent conversation turns and resolve active conversational topic
+  const recentTurns = (history || [])
+    .filter(h => h && (h.text || h.content || h.message))
+    .slice(-8);
 
-  const isExplicitFollowUp = /^(why|how|how so|what about|could that|can that|how is that|what would i need|is it|what does it|explain more|tell me more|what next|what to do|what should i do)\b/i.test(query.trim()) && query.trim().split(/\s+/).length <= 8;
+  const fullHistoryText = recentTurns
+    .map(h => (h.text || h.content || h.message || '').toLowerCase())
+    .join(' ');
+
+  const recentUserTurns = (history || [])
+    .filter(h => h.sender === 'user' || h.role === 'user')
+    .slice(-4);
+  const lastUserTurn = (recentUserTurns[recentUserTurns.length - 1]?.text || recentUserTurns[recentUserTurns.length - 1]?.content || recentUserTurns[recentUserTurns.length - 1]?.message || '').toLowerCase();
+
+  const recentAiTurns = (history || [])
+    .filter(h => h.sender === 'ai' || h.role === 'assistant')
+    .slice(-4);
+  const lastAiTurn = (recentAiTurns[recentAiTurns.length - 1]?.text || recentAiTurns[recentAiTurns.length - 1]?.content || recentAiTurns[recentAiTurns.length - 1]?.message || '').toLowerCase();
+
+  // Detect if user is explicitly switching away from previous subject
+  const isSwitchingTopic = /\b(forget|switch to|instead|let's talk about|talk about|what about|okay forget)\b/i.test(query) && (
+    lowerQ.includes('compressor') ||
+    lowerQ.includes('surge') ||
+    lowerQ.includes('pump') ||
+    lowerQ.includes('cavitation') ||
+    lowerQ.includes('reactor') ||
+    lowerQ.includes('distillation') ||
+    lowerQ.includes('heat exchanger') ||
+    lowerQ.includes('boiler') ||
+    lowerQ.includes('plc') ||
+    lowerQ.includes('sky') ||
+    lowerQ.includes('entropy') ||
+    lowerQ.includes('pid')
+  );
+
+  const isFollowUpPattern = /^(why|how|how so|what about|could that|can that|how is that|what would i need|is it|what does it|explain more|tell me more|what next|what to do|what should i do|what causes|what if|how do i|how to|what should i check|how would i detect|could my pump)\b/i.test(query.trim()) && query.trim().split(/\s+/).length <= 12;
+
+  // Active topic flags based on immediate previous turns when not switching
+  const prevWasPID = !isSwitchingTopic && (
+    lastUserTurn.includes('pid') ||
+    lastUserTurn.includes('tuning') ||
+    lastUserTurn.includes('oscillat') ||
+    lastUserTurn.includes('dead time') ||
+    lastAiTurn.includes('pid') ||
+    lastAiTurn.includes('proportional') ||
+    lastAiTurn.includes('ziegler') ||
+    lastAiTurn.includes('controller output') ||
+    lastAiTurn.includes('why pid control')
+  );
+
+  const prevWasCompressor = !isSwitchingTopic && (
+    lastUserTurn.includes('compressor') ||
+    lastUserTurn.includes('surge') ||
+    lastAiTurn.includes('compressor') ||
+    lastAiTurn.includes('surge line') ||
+    lastAiTurn.includes('anti-surge')
+  );
+
+  const prevWasCavitation = !isSwitchingTopic && (
+    lastUserTurn.includes('cavitation') ||
+    lastUserTurn.includes('npsh') ||
+    lastAiTurn.includes('cavitation') ||
+    lastAiTurn.includes('npsha') ||
+    lastAiTurn.includes('vapor pressure')
+  );
 
   // =========================================================================
   // 1. UNIVERSAL INDUSTRIAL KNOWLEDGE: THERMODYNAMICS & ENTROPY
   // =========================================================================
-  const isEntropyTopic = lowerQ.includes('entropy') || lowerQ.includes('second law') || lowerQ.includes('irreversibility') || (isExplicitFollowUp && (lastUserTurn.includes('entropy') || lastUserTurn.includes('second law')));
+  const isEntropyTopic = (lowerQ.includes('entropy') || lowerQ.includes('second law') || lowerQ.includes('irreversibility') || (isFollowUpPattern && (lastUserTurn.includes('entropy') || lastUserTurn.includes('second law')))) && !isSwitchingTopic && !lowerQ.includes('compressor') && !lowerQ.includes('pid');
 
   if (isEntropyTopic) {
     const isAskingAboutExchanger = lowerQ.includes('heat exchanger') || lowerQ.includes('my heat exchanger') || lowerQ.includes('e-101') || lowerQ.includes('e101') || lowerQ.includes('matter in my') || lowerQ.includes('affect my') || lowerQ.includes('happening with my heat exchanger');
-    const isAskingHeatTransferRel = lowerQ.includes('heat transfer') || lowerQ.includes('related to heat') || (lowerQ.includes('transfer') && isExplicitFollowUp);
-    const isAskingWhyIncrease = lowerQ.includes('why does') || lowerQ.includes('why entropy') || (lowerQ.includes('increase') && isExplicitFollowUp);
+    const isAskingHeatTransferRel = lowerQ.includes('heat transfer') || lowerQ.includes('related to heat') || (lowerQ.includes('transfer') && isFollowUpPattern);
+    const isAskingWhyIncrease = lowerQ.includes('why does') || lowerQ.includes('why entropy') || (lowerQ.includes('increase') && isFollowUpPattern);
 
     if (isAskingAboutExchanger) {
       const isRightNow = lowerQ.includes('right now') || lowerQ.includes('current') || lowerQ.includes('happening there') || lowerQ.includes('happening with');
@@ -362,26 +421,49 @@ In industrial chemical engineering, entropy generation (S_gen) directly equals l
   // =========================================================================
   // 2. UNIVERSAL INDUSTRIAL KNOWLEDGE: COMPRESSORS & COMPRESSOR SURGE
   // =========================================================================
-  const isCompressorTopic = lowerQ.includes('compressor') || lowerQ.includes('surge') || (isExplicitFollowUp && lastUserTurn.includes('surge') && !lowerQ.includes('process') && !lowerQ.includes('boiler') && !lowerQ.includes('plc') && !lowerQ.includes('refrigeration') && !lowerQ.includes('bernoulli'));
+  const isCompressorTopic = (
+    lowerQ.includes('compressor') ||
+    lowerQ.includes('surge') ||
+    (prevWasCompressor && (
+      lowerQ.includes('detect') ||
+      lowerQ.includes('monitor') ||
+      lowerQ.includes('instrumentation') ||
+      lowerQ.includes('prevent') ||
+      lowerQ.includes('how') ||
+      lowerQ.includes('why') ||
+      lowerQ.includes('happen') ||
+      isFollowUpPattern
+    ))
+  ) && !lowerQ.includes('process') && !lowerQ.includes('boiler') && !lowerQ.includes('plc') && !lowerQ.includes('refrigeration') && !lowerQ.includes('bernoulli');
 
   if (isCompressorTopic) {
-    const isComparingWithCavitation = lowerQ.includes('compare') || (isExplicitFollowUp && lastUserTurn.includes('cavitation'));
-    const isPlantOccur = lowerQ.includes('happen in an industrial') || lowerQ.includes('happen in a plant') || (isExplicitFollowUp && (lowerQ.includes('could that happen') || lowerQ.includes('industrial plant')));
-    const isMonitoring = lowerQ.includes('monitor') || lowerQ.includes('what would i need') || lowerQ.includes('instrumentation');
+    const isComparingWithCavitation = lowerQ.includes('compare') || (prevWasCompressor && lastUserTurn.includes('cavitation'));
+    const isPlantOccur = lowerQ.includes('happen in an industrial') || lowerQ.includes('happen in a plant') || (prevWasCompressor && (lowerQ.includes('could that happen') || lowerQ.includes('industrial plant')));
+    const isDetectionOrMonitoring = lowerQ.includes('detect') || lowerQ.includes('monitor') || lowerQ.includes('what would i need') || lowerQ.includes('instrumentation') || (prevWasCompressor && (lowerQ.includes('how would i') || lowerQ.includes('how do i') || lowerQ.includes('how to')));
 
-    if (isMonitoring) {
+    if (isDetectionOrMonitoring) {
       return {
         success: true,
-        answer: `COMPRESSOR SURGE MONITORING & INSTRUMENTATION:
+        answer: `COMPRESSOR SURGE DETECTION & INSTRUMENTATION:
 
-To detect and prevent aerodynamic compressor surge in an industrial plant, engineers monitor:
-1. Suction Differential Pressure (ΔP): High-speed DP transmitters across a calibrated venturi/orifice to calculate instantaneous volumetric flow.
-2. Compression Pressure Ratio (P_discharge / P_suction): Monitored against the machine's characteristic Surge Limit Line (SLL).
-3. Shaft Radial & Thrust Vibration: Proximity probes and accelerometers detecting blade-pass frequencies and violent axial rotor shuttling.
-4. Fast Temperature Spikes: Suction thermocouples to detect instantaneous gas backflow and re-compression heating.
-5. Anti-Surge Valve Positioner: Verifying high-speed modulation (<1.5s stroke time) to recycle gas through a suction cooler.`,
+To detect and prevent aerodynamic compressor surge in real-time, industrial plants deploy specialized high-speed instrumentation:
+
+1. High-Speed Differential Pressure (ΔP) Transmitters:
+• Fast-response transmitters across suction flow elements (venturi, nozzle, or orifice) detect rapid volumetric flow collapse and high-frequency pressure pulsations (<50 ms response time).
+
+2. Dynamic Pressure Ratio & Performance Mapping:
+• Anti-Surge Controllers continuously calculate the operating point coordinate: Pressure Ratio (P_discharge / P_suction) vs. Equivalent Flow (h / P_suction), tracking proximity to the Surge Control Line (SCL) and Surge Limit Line (SLL).
+
+3. Shaft Radial & Axial Vibration Proximity Probes:
+• Eddy-current proximity probes monitor dynamic axial shaft displacement and casing accelerometers detect violent rotor shuttling and sub-synchronous stall frequencies before full surge develops.
+
+4. Fast Suction / Stage Temperature Sensors:
+• Rapid-response thermocouples/RTDs detect temperature spikes caused by hot compressed gas reversing back into the suction plenum during surge cycles.
+
+5. High-Speed Anti-Surge Recycle Valve:
+• Fast-acting pneumatic control valve with high-capacity booster relays, capable of stroking 100% open in under 1.0 to 1.5 seconds.`,
         equipment: 'all',
-        intent: 'compressor_monitoring',
+        intent: 'compressor_detection',
         timestamp
       };
     }
@@ -558,9 +640,96 @@ Used for overhead condenser subcooling in light-hydrocarbon distillation (e.g., 
   // =========================================================================
   // 3. UNIVERSAL INDUSTRIAL KNOWLEDGE: PID CONTROLLERS & LOOP TUNING
   // =========================================================================
-  if (lowerQ.includes('pid') || lowerQ.includes('tuning') || lowerQ.includes('ziegler') || lowerQ.includes('cascade control') || lowerQ.includes('feedforward')) {
+  const isPIDTopic = (
+    lowerQ.includes('pid') ||
+    lowerQ.includes('tuning') ||
+    lowerQ.includes('ziegler') ||
+    lowerQ.includes('cascade control') ||
+    lowerQ.includes('feedforward') ||
+    lowerQ.includes('smith predictor') ||
+    (prevWasPID && (
+      lowerQ.includes('oscillat') ||
+      lowerQ.includes('fix') ||
+      lowerQ.includes('tune') ||
+      lowerQ.includes('dead time') ||
+      lowerQ.includes('delay') ||
+      lowerQ.includes('why') ||
+      lowerQ.includes('how') ||
+      lowerQ.includes('increase') ||
+      isFollowUpPattern
+    ))
+  ) && !isSwitchingTopic && !lowerQ.includes('compressor') && !lowerQ.includes('cavitation') && !lowerQ.includes('sky');
+
+  if (isPIDTopic) {
+    const isOscillationQuestion = lowerQ.includes('oscillat') || (prevWasPID && (lowerQ.includes('why') || lowerQ.includes('happen') || lowerQ.includes('cause')) && !lowerQ.includes('fix') && !lowerQ.includes('dead time'));
+    const isFixQuestion = lowerQ.includes('fix') || lowerQ.includes('tune') || lowerQ.includes('how would i') || lowerQ.includes('how do i') || (prevWasPID && lowerQ.includes('how') && !lowerQ.includes('dead time'));
+    const isDeadTimeQuestion = lowerQ.includes('dead time') || lowerQ.includes('delay') || lowerQ.includes('smith');
     const isSimple = lowerQ.includes('simple') || lowerQ.includes('beginner');
     const isFormula = lowerQ.includes('formula') || lowerQ.includes('equation');
+
+    if (isOscillationQuestion && !isFixQuestion && !isDeadTimeQuestion) {
+      return {
+        success: true,
+        answer: `WHY PID CONTROL LOOPS OSCILLATE:
+
+1. Excessive Controller Gain (Proportional Over-Action):
+• High Gain (K_c > K_u): When proportional gain is set too aggressive, the controller over-corrects for minor errors, driving the process variable (PV) past the setpoint (SP) and causing underdamped oscillation or sustained limit cycles.
+
+2. Excessive Integral Action (Phase Lag & Reset Windup):
+• Fast Integral Reset (T_i too small): Integral action accumulates past error and introduces up to 90° of phase lag into the open-loop transfer function. This severe phase lag erodes the phase margin, destabilizing the feedback loop.
+
+3. Process Dead Time (Time Delay θ_d):
+• Uncompensated transport delay means the controller acts on outdated feedback. By the time the corrective control action reaches the sensor, the process has already moved, causing continuous overshoot and undershoot cycles.
+
+4. Control Valve Mechanical Nonlinearities:
+• Valve Stiction & Deadband: Static friction holds the valve plug until actuator pressure builds up enough to break free, causing the valve to jump past the desired position and producing persistent limit-cycle hunting.`,
+        equipment: 'all',
+        intent: 'pid_oscillation',
+        timestamp
+      };
+    }
+
+    if (isFixQuestion && !isDeadTimeQuestion) {
+      return {
+        success: true,
+        answer: `HOW TO ELIMINATE PID LOOP OSCILLATIONS:
+
+1. Controller Tuning Adjustments:
+• Reduce Controller Gain (K_c): Lower the proportional gain by 30% to 50% (widen proportional band) to restore adequate gain margin (target >= 6 dB).
+• Increase Integral Reset Time (T_i): Lengthen T_i (slow down reset action) to reduce phase lag and recover phase margin (target >= 45°).
+• Add / Tune Derivative Damping (T_d): For temperature or lag-dominant loops, moderate derivative action adds phase lead; ensure a high-frequency derivative filter (N ≈ 8–10) is active to prevent noise amplification.
+
+2. Apply Robust Tuning Rules:
+• Lambda (IMC) Tuning: Specify a closed-loop time constant (λ >= Dead Time) for guaranteed non-oscillatory, smooth setpoint tracking and disturbance rejection.
+• AMIGO (Approximate M-constrained Integral Gain Optimization): Provides optimal load disturbance rejection with guaranteed robustness margins.
+
+3. Inspect Physical Final Control Elements:
+• Control Valve Diagnostic: Test for valve stiction, positioner deadband, or mechanical linkage slop. Perform step tests to verify linear stroke response.`,
+        equipment: 'all',
+        intent: 'pid_fix_oscillation',
+        timestamp
+      };
+    }
+
+    if (isDeadTimeQuestion) {
+      return {
+        success: true,
+        answer: `PID CONTROL WITH LARGE PROCESS DEAD TIME (TIME DELAY):
+
+1. The Fundamental Dead-Time Challenge:
+In processes where dead time dominates the time constant (θ_d / τ > 1, such as long pipelines, conveyor belts, or thermal transport delays):
+• Dead time introduces a pure phase lag -ω*θ_d that grows linearly with frequency without contributing any gain attenuation.
+• Standard PID controllers are forced to detune severely (drastically reduced gain and sluggish integral action) to avoid instability.
+
+2. Advanced Dead-Time Compensation Techniques:
+• Smith Predictor: An internal model-based structure with a secondary fast feedback loop that calculates control actions as if the process had zero dead time, while an outer loop compensates for model mismatch and disturbances.
+• Internal Model Control (IMC) / Dahlin Controller: Controller algorithms designed with the dead time explicitly inverted in the feedback path for deadbeat or smooth response.
+• Feedforward Control: Measures load disturbances upstream before the dead time affects the primary loop and applies immediate corrective action.`,
+        equipment: 'all',
+        intent: 'pid_dead_time',
+        timestamp
+      };
+    }
 
     if (isSimple) {
       return {
@@ -830,11 +999,14 @@ Track continuous parameter derivatives to detect slope acceleration before criti
   // 10. "WHAT SHOULD I DO?" / OPERATOR RECOMMENDATIONS
   // =========================================================================
   if (
-    lowerQ.includes('what should i do') ||
-    lowerQ.includes('what should i check') ||
+    (lowerQ.includes('what should i do') ||
     lowerQ.includes('what to do') ||
     lowerQ.includes('action') ||
-    lowerQ.includes('recommendation')
+    lowerQ.includes('recommendation') ||
+    (lowerQ.includes('what should i check') && !prevWasCavitation && !prevWasPID && !prevWasCompressor)) &&
+    !isCavitationTopic &&
+    !isPIDTopic &&
+    !isCompressorTopic
   ) {
     if (!isAnomaly) {
       return {
@@ -991,7 +1163,107 @@ Safety Gate State: ${safety.statusLabel}`,
   // =========================================================================
   // 12b. PUMP CAVITATION & FLUID MACHINERY
   // =========================================================================
-  if (lowerQ.includes('cavitation') || (lowerQ.includes('npsh') && !lowerQ.includes('compressor'))) {
+  const isCavitationTopic = (
+    lowerQ.includes('cavitation') ||
+    (lowerQ.includes('npsh') && !lowerQ.includes('compressor')) ||
+    (prevWasCavitation && (
+      lowerQ.includes('cause') ||
+      lowerQ.includes('why') ||
+      lowerQ.includes('could my pump') ||
+      lowerQ.includes('my pump') ||
+      lowerQ.includes('check first') ||
+      lowerQ.includes('what should i check') ||
+      lowerQ.includes('how to check') ||
+      isFollowUpPattern
+    ))
+  ) && !isSwitchingTopic && !lowerQ.includes('compressor') && !lowerQ.includes('pid');
+
+  if (isCavitationTopic) {
+    const isCausesQuestion = lowerQ.includes('cause') || (prevWasCavitation && (lowerQ.includes('why') || lowerQ.includes('happen') || lowerQ.includes('what leads')));
+    const isLivePumpCheck = lowerQ.includes('my pump') || lowerQ.includes('p-101') || lowerQ.includes('could my') || lowerQ.includes('does my') || lowerQ.includes('in our pump');
+    const isCheckFirstQuestion = lowerQ.includes('check first') || lowerQ.includes('what should i check') || lowerQ.includes('what to check') || (prevWasCavitation && lowerQ.includes('check'));
+
+    if (isCausesQuestion && !isLivePumpCheck && !isCheckFirstQuestion) {
+      return {
+        success: true,
+        answer: `ROOT CAUSES OF PUMP CAVITATION:
+
+1. Insufficient Net Positive Suction Head Available (NPSHa < NPSHr):
+• The static pressure at the pump suction eye falls below the fluid vapor pressure (P_vapor), causing instant localized boiling and microscopic bubble generation.
+
+2. Elevated Fluid Operating Temperature:
+• Higher liquid temperature exponentially increases vapor pressure (P_vapor) per Antoine's equation, reducing the available cavitation margin (NPSHa - NPSHr).
+
+3. Suction Line Pressure Drop & Restrictions:
+• Clogged Suction Strainer: Accumulated debris creates severe flow restriction and local pressure drop.
+• Partially Closed Suction Valve: Generates high localized fluid velocity and static pressure drop (Bernoulli restriction).
+• Undersized Suction Piping / Long Suction Line: Excessive frictional head loss (h_friction).
+
+4. Feed Tank Low Liquid Level & Vortex Formation:
+• Insufficient static liquid height in the feed tank reduces hydrostatic head and allows surface vortexing, drawing air/vapor directly into the suction nozzle.
+
+5. Operating Off the Best Efficiency Point (BEP):
+• Running at excessive flow rates far to the right of BEP, where required suction head (NPSHr) increases steeply.`,
+        equipment: 'pump',
+        intent: 'cavitation_causes',
+        timestamp
+      };
+    }
+
+    if (isLivePumpCheck && !isCheckFirstQuestion) {
+      const isElevated = pump.vibration > 0.20 || pump.rpm < 2000;
+      return {
+        success: true,
+        answer: `EVALUATION OF LIVE P-101 PUMP FOR CAVITATION:
+
+1. Live P-101 Telemetry Analysis:
+• Pump Speed: ${Math.round(pump.rpm)} RPM (Nominal: 2450 RPM)
+• Vibration Level: ${pump.vibration.toFixed(2)} g (Baseline: 0.08 g, Warning Threshold: 0.20 g)
+• Discharge Flow: ${(pump.flow ?? 10.0).toFixed(1)} L/min (Nominal: 10.0 L/min)
+• Suction Temperature: ${pump.inlet_temperature.toFixed(1)} °C (Water P_vapor ≈ 0.032 bar)
+
+2. Hydraulic & Cavitation Status:
+${isElevated ? `⚠ Elevated Vibration & Flow Anomaly Detected:
+• P-101 vibration is elevated at ${pump.vibration.toFixed(2)} g with reduced flow of ${(pump.flow ?? 10.0).toFixed(1)} L/min.
+• This acoustic and mechanical signature is consistent with suction starvation, hydraulic cavitation, or mechanical impeller degradation.` : `✓ Nominal Hydraulic Condition:
+• P-101 is currently operating with stable vibration (${pump.vibration.toFixed(2)} g) and nominal flow (${(pump.flow ?? 10.0).toFixed(1)} L/min).
+• The available suction head (NPSHa) maintains an adequate safety margin above NPSHr.`}`,
+        equipment: 'pump',
+        intent: 'pump_cavitation_check',
+        timestamp
+      };
+    }
+
+    if (isCheckFirstQuestion) {
+      return {
+        success: true,
+        answer: `PRIORITY DIAGNOSTIC CHECKLIST FOR PUMP CAVITATION (P-101):
+
+When investigating suspected pump cavitation, inspect in the following chronological order:
+
+1. Suction Strainer Differential Pressure (ΔP):
+• Check if the suction inlet filter/basket strainer is blinded by scale or particulate debris, which starves the pump of static suction pressure.
+
+2. Feed Tank / Reservoir Liquid Level:
+• Verify that the feed vessel level is well above the minimum submergence limit to prevent air-entraining surface vortices and ensure adequate static head (h_static).
+
+3. Suction Block Valve Alignment:
+• Confirm the suction isolation valve is 100% fully open. (Never throttle flow using a suction valve — throttling must always be done on the discharge side).
+
+4. Suction Liquid Temperature:
+• Verify inlet temperature (${pump.inlet_temperature.toFixed(1)} °C) has not spiked, which would elevate liquid vapor pressure.
+
+5. Operating Flow vs. Pump Head Curve:
+• Check if the pump is operating too far to the right of its Best Efficiency Point (BEP) where NPSHr rises sharply.
+
+6. Impeller Visual / Internal Inspection (if taken offline):
+• Inspect impeller eye and vane leading edges for classic pitting, erosion, or sponge-like metal loss.`,
+        equipment: 'pump',
+        intent: 'cavitation_checklist',
+        timestamp
+      };
+    }
+
     return {
       success: true,
       answer: `CENTRIFUGAL PUMPS & CAVITATION PHENOMENOLOGY:
