@@ -116,22 +116,36 @@ export async function chatWithGroq({
     throw new Error('GROQ_API_KEY is not configured in the environment');
   }
 
+  const actualUserMessage = String(message || '').trim();
+
+  // Safe dev log for verifying message flow (never logs keys/secrets)
+  console.log("CHEMDIAG GROQ USER MESSAGE:", actualUserMessage);
+
   const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
   const systemPrompt = buildSystemPrompt(liveState, processContext);
 
   // Format conversation history for Groq / OpenAI messages format
   const formattedHistory = (conversation || [])
-    .slice(-12) // Keep recent 12 turns for context
+    .slice(-10) // Keep recent 10 turns for context
     .filter(turn => turn && (turn.content || turn.text || turn.message))
     .map(turn => ({
       role: (turn.role === 'user' || turn.sender === 'user') ? 'user' : 'assistant',
       content: String(turn.content || turn.text || turn.message)
     }));
 
+  // Ensure current user message is not duplicated at the end of history
+  if (
+    formattedHistory.length > 0 &&
+    formattedHistory[formattedHistory.length - 1].role === 'user' &&
+    formattedHistory[formattedHistory.length - 1].content.trim() === actualUserMessage
+  ) {
+    formattedHistory.pop();
+  }
+
   const messages = [
     { role: 'system', content: systemPrompt },
     ...formattedHistory,
-    { role: 'user', content: String(message) }
+    { role: 'user', content: actualUserMessage }
   ];
 
   try {

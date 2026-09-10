@@ -120,6 +120,43 @@ export class ProcessSimulator {
     this.faultTicks = 0;
     this.faultSeverity = 0.0;
     this.resetControls();
+
+    // Reset non-targeted simulated units to nominal baseline
+    if (fault !== 'reactor_cooling_failure' && fault !== 'early_reactor_cooling_degradation') {
+      this.reactor.cooling_status = 1;
+      this.reactor.temperature = 65.0;
+      this.reactor.pressure = 2.05;
+      this.reactor.level = 50.0;
+      this.reactor.agitator_speed = 350;
+      this.reactor.health = 100;
+      this.reactor.status = 'NORMAL';
+    }
+    if (fault !== 'distillation_fault' && fault !== 'early_distillation_reflux_loss') {
+      this.distillation.reflux_ratio = 1.85;
+      this.distillation.top_temperature = 76.5;
+      this.distillation.bottom_temperature = 98.4;
+      this.distillation.pressure = 2.10;
+      this.distillation.level = 52.0;
+      this.distillation.health = 100;
+      this.distillation.status = 'NORMAL';
+    }
+    if (fault !== 'pump_fault' && fault !== 'early_pump_degradation') {
+      this.pump.vibration = 0.08;
+      this.pump.rpm = 2450;
+      this.pump.outlet_temperature = 38.1;
+      this.pump.pressure = 2.80;
+      this.pump.health = 100;
+      this.pump.status = 'NORMAL';
+    }
+    if (fault !== 'heat_exchanger_fault' && fault !== 'early_heat_exchanger_fouling') {
+      this.heatExchanger.efficiency = 95.0;
+      this.heatExchanger.inlet_temperature = 25.2;
+      this.heatExchanger.outlet_temperature = 38.1;
+      this.heatExchanger.temperature_difference = 12.9;
+      this.heatExchanger.heat_transfer_indicator = 95.0;
+      this.heatExchanger.health = 100;
+      this.heatExchanger.status = 'NORMAL';
+    }
   }
 
   getFault() {

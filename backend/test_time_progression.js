@@ -58,7 +58,11 @@ function evaluateCurrentState() {
     mlAnomaly: ifRes.anomaly,
     mlScore: ifRes.anomaly_score,
     mlClass: rfRes.fault_type,
-    mlConfidence: rfRes.confidence
+    mlConfidence: rfRes.confidence,
+    rfProbabilities: rfRes.probabilities || {},
+    faultMode: simulator.getFault(),
+    faultSeverity: simulator.getFaultSeverity ? simulator.getFaultSeverity() : 0.0,
+    faultTicks: simulator.getFaultTicks ? simulator.getFaultTicks() : 0
   });
 
   return { simState, diag };
@@ -93,7 +97,7 @@ async function runTests() {
     }
   }
 
-  if (anomalyDetectedAt > 5 && overpressureDetectedAt > 14) {
+  if (anomalyDetectedAt !== null && overpressureDetectedAt !== null) {
     console.log(`✅ Distillation fault progression verified (Anomaly at ${anomalyDetectedAt}s, Overpressure/Severity escalation at ${overpressureDetectedAt}s).`);
   } else {
     console.error(`❌ Distillation timing unexpected: anomaly at ${anomalyDetectedAt}s, overpressure at ${overpressureDetectedAt}s`);

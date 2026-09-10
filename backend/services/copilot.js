@@ -233,25 +233,23 @@ export function answerProcessQuestion({
     else if (liveState.activeFault?.includes('heat')) detectedEquip = 'heat_exchanger';
   }
 
-  // Check recent conversation turns for topic resolution
+  // Check recent conversation turns for topic resolution ONLY when current query is a short follow-up or pronoun
   const recentUserTurnsList = (history || [])
     .filter(h => h.sender === 'user' || h.role === 'user');
   const lastUserTurnObj = recentUserTurnsList.slice(-1)[0];
   const lastUserTurn = (lastUserTurnObj?.text || lastUserTurnObj?.content || lastUserTurnObj?.message || '').toLowerCase();
-  const recentUserTurns = recentUserTurnsList
-    .slice(-3)
-    .map(h => (h.text || h.content || h.message || '').toLowerCase())
-    .join(' ');
+
+  const isExplicitFollowUp = /^(why|how|how so|what about|could that|can that|how is that|what would i need|is it|what does it|explain more|tell me more|what next|what to do|what should i do)\b/i.test(query.trim()) && query.trim().split(/\s+/).length <= 8;
 
   // =========================================================================
   // 1. UNIVERSAL INDUSTRIAL KNOWLEDGE: THERMODYNAMICS & ENTROPY
   // =========================================================================
-  const isEntropyTopic = lowerQ.includes('entropy') || lowerQ.includes('thermodynamics') || lowerQ.includes('second law') || lowerQ.includes('irreversibility') || (recentUserTurns.includes('entropy') && (lowerQ.includes('why') || lowerQ.includes('heat transfer') || lowerQ.includes('exchanger') || lowerQ.includes('increase') || lowerQ.includes('matter')));
+  const isEntropyTopic = lowerQ.includes('entropy') || lowerQ.includes('second law') || lowerQ.includes('irreversibility') || (isExplicitFollowUp && (lastUserTurn.includes('entropy') || lastUserTurn.includes('second law')));
 
   if (isEntropyTopic) {
-    const isAskingAboutExchanger = lowerQ.includes('heat exchanger') || lowerQ.includes('my heat exchanger') || lowerQ.includes('e-101') || lowerQ.includes('e101') || lowerQ.includes('my process') || lowerQ.includes('matter in my') || lowerQ.includes('affect my') || lowerQ.includes('happening with my heat exchanger') || lowerQ.includes('happening there');
-    const isAskingHeatTransferRel = lowerQ.includes('heat transfer') || lowerQ.includes('related to heat') || lowerQ.includes('transfer');
-    const isAskingWhyIncrease = lowerQ.includes('why does') || lowerQ.includes('why entropy') || lowerQ.includes('increase');
+    const isAskingAboutExchanger = lowerQ.includes('heat exchanger') || lowerQ.includes('my heat exchanger') || lowerQ.includes('e-101') || lowerQ.includes('e101') || lowerQ.includes('matter in my') || lowerQ.includes('affect my') || lowerQ.includes('happening with my heat exchanger');
+    const isAskingHeatTransferRel = lowerQ.includes('heat transfer') || lowerQ.includes('related to heat') || (lowerQ.includes('transfer') && isExplicitFollowUp);
+    const isAskingWhyIncrease = lowerQ.includes('why does') || lowerQ.includes('why entropy') || (lowerQ.includes('increase') && isExplicitFollowUp);
 
     if (isAskingAboutExchanger) {
       const isRightNow = lowerQ.includes('right now') || lowerQ.includes('current') || lowerQ.includes('happening there') || lowerQ.includes('happening with');
@@ -364,12 +362,12 @@ In industrial chemical engineering, entropy generation (S_gen) directly equals l
   // =========================================================================
   // 2. UNIVERSAL INDUSTRIAL KNOWLEDGE: COMPRESSORS & COMPRESSOR SURGE
   // =========================================================================
-  const isCompressorTopic = lowerQ.includes('compressor') || lowerQ.includes('surge') || (recentUserTurns.includes('surge') && (lowerQ.includes('happen') || lowerQ.includes('monitor') || lowerQ.includes('plant') || lowerQ.includes('industrial') || lowerQ.includes('could that') || lowerQ.includes('what would i need') || lowerQ.includes('how to prevent')));
+  const isCompressorTopic = lowerQ.includes('compressor') || lowerQ.includes('surge') || (isExplicitFollowUp && lastUserTurn.includes('surge') && !lowerQ.includes('process') && !lowerQ.includes('boiler') && !lowerQ.includes('plc') && !lowerQ.includes('refrigeration') && !lowerQ.includes('bernoulli'));
 
   if (isCompressorTopic) {
-    const isComparingWithCavitation = lowerQ.includes('compare') || lastUserTurn.includes('cavitation');
-    const isPlantOccur = lowerQ.includes('happen in an industrial') || lowerQ.includes('happen in a plant') || lowerQ.includes('could that happen') || lowerQ.includes('industrial plant');
-    const isMonitoring = lowerQ.includes('monitor') || lowerQ.includes('what would i need') || lowerQ.includes('what to monitor');
+    const isComparingWithCavitation = lowerQ.includes('compare') || (isExplicitFollowUp && lastUserTurn.includes('cavitation'));
+    const isPlantOccur = lowerQ.includes('happen in an industrial') || lowerQ.includes('happen in a plant') || (isExplicitFollowUp && (lowerQ.includes('could that happen') || lowerQ.includes('industrial plant')));
+    const isMonitoring = lowerQ.includes('monitor') || lowerQ.includes('what would i need') || lowerQ.includes('instrumentation');
 
     if (isMonitoring) {
       return {
@@ -432,6 +430,127 @@ ${isComparingWithCavitation ? `4. Comparison: Pump Cavitation vs. Compressor Sur
 • Damage: Cavitation pits impellers locally; Surge causes catastrophic axial bearing destruction and machine-wide mechanical failure.` : ''}`,
       equipment: 'all',
       intent: 'compressor_explanation',
+      timestamp
+    };
+  }
+
+  // =========================================================================
+  // 2b. UNIVERSAL INDUSTRIAL KNOWLEDGE: BOILERS & STEAM GENERATION
+  // =========================================================================
+  if (lowerQ.includes('boiler') || lowerQ.includes('steam generation') || lowerQ.includes('steam drum')) {
+    return {
+      success: true,
+      answer: `INDUSTRIAL BOILERS & STEAM GENERATION:
+
+1. Working Principle:
+An industrial boiler converts feedwater into high-pressure saturated or superheated steam by transferring heat from fuel combustion or hot flue gases:
+• Water-Tube Boilers: Water circulates inside tubes surrounded by external hot combustion gases; ideal for high-pressure, high-capacity utility steam.
+• Fire-Tube Boilers: Hot combustion gases pass through tubes submerged in a water shell; ideal for low-to-medium pressure facility steam.
+
+2. Core Components & Subsystems:
+• Economizer: Preheats incoming boiler feedwater using waste flue gas heat.
+• Steam Drum: Separates saturated steam from boiling water using cyclone separators and chevron demisters.
+• Superheater: Heats dry saturated steam above its saturation temperature to prevent condensation in downstream turbines.
+• Deaerator: Strips dissolved O2 and CO2 from feedwater via steam stripping to prevent severe tube corrosion.
+
+3. 3-Element Boiler Drum Level Control:
+Maintains steam drum liquid level despite shrink/swell phenomena by measuring:
+1. Drum Level (Primary Process Variable)
+2. Steam Flow Rate (Feedforward load disturbance)
+3. Feedwater Flow Rate (Manipulated flow feedback loop)
+
+4. Water Chemistry & Blowdown:
+Continuous and bottom blowdown cycles purge accumulated total dissolved solids (TDS) and silica to prevent scale formation and carryover.`,
+      equipment: 'all',
+      intent: 'boiler_explanation',
+      timestamp
+    };
+  }
+
+  // =========================================================================
+  // 2c. UNIVERSAL INDUSTRIAL KNOWLEDGE: PLC & INDUSTRIAL AUTOMATION
+  // =========================================================================
+  if (lowerQ.includes('plc') || lowerQ.includes('programmable logic controller')) {
+    return {
+      success: true,
+      answer: `PROGRAMMABLE LOGIC CONTROLLERS (PLC) IN PROCESS AUTOMATION:
+
+1. Definition & Role:
+A Programmable Logic Controller (PLC) is a ruggedized, real-time microprocessor-based industrial computer designed to automate manufacturing processes, machinery, and discrete/batch chemical operations in harsh electromagnetic and thermal environments.
+
+2. Deterministic PLC Scan Cycle:
+The CPU executes a continuous deterministic scan loop typically in 1 to 50 milliseconds:
+1. Input Scan: Reads physical field discrete and analog I/O signals (e.g. 24V DC switches, 4–20 mA transmitters) into the input image memory.
+2. Program Execution: Executes user logic sequentially from top to bottom (Ladder Logic, Function Block Diagram, Structured Text per IEC 61131-3).
+3. Output Scan: Writes updated logic decisions to physical output modules (solenoid valves, motor contactors, VFDs, alarm beacons).
+4. Housekeeping & Communications: Diagnostics and network communications (Modbus TCP, Ethernet/IP, Profinet).
+
+3. PLC vs. DCS (Distributed Control System):
+• PLC: Excel at high-speed discrete logic, interlocking, motor sequencing, machine control, and emergency shutdown (ESD / SIS SIL-3).
+• DCS: Geared toward continuous large-scale regulatory PID process control across entire chemical plants with integrated database and unified alarm management.`,
+      equipment: 'all',
+      intent: 'plc_explanation',
+      timestamp
+    };
+  }
+
+  // =========================================================================
+  // 2d. UNIVERSAL INDUSTRIAL KNOWLEDGE: BERNOULLI'S EQUATION & HYDRAULICS
+  // =========================================================================
+  if (lowerQ.includes('bernoulli') || lowerQ.includes('venturi')) {
+    return {
+      success: true,
+      answer: `BERNOULLI'S EQUATION & FLUID FLOW DYNAMICS:
+
+1. Fundamental Principle:
+Bernoulli's equation expresses the conservation of mechanical energy along a streamline for steady, incompressible, frictionless (inviscid) fluid flow:
+
+P1 + 0.5 * ρ * v1² + ρ * g * z1 = P2 + 0.5 * ρ * v2² + ρ * g * z2
+
+Where:
+• P = Static pressure (Pa or N/m²)
+• 0.5 * ρ * v² = Dynamic pressure (kinetic energy per unit volume)
+• ρ * g * z = Hydrostatic potential pressure (elevation energy per unit volume)
+• ρ = Fluid density (kg/m³), v = velocity (m/s), g = 9.81 m/s², z = elevation (m)
+
+2. The Venturi Effect & Flow Measurement:
+When fluid flows through a pipe restriction (nozzle/throat), continuity (A1*v1 = A2*v2) forces velocity to increase (v2 > v1). By Bernoulli's equation, static pressure must drop (P2 < P1). Measuring this differential pressure (ΔP = P1 - P2) across an orifice plate or venturi allows accurate calculation of volumetric flow rate:
+Q = C_d * A_throat * sqrt(2 * ΔP / (ρ * (1 - β⁴)))
+
+3. Real-World Extension (Engineering Bernoulli):
+In industrial piping networks, friction head losses (Darcy-Weisbach friction factor f) and pump work (h_pump) are added:
+P1/(ρ*g) + v1²/(2*g) + z1 + h_pump = P2/(ρ*g) + v2²/(2*g) + z2 + h_loss.`,
+      equipment: 'all',
+      intent: 'bernoulli_explanation',
+      timestamp
+    };
+  }
+
+  // =========================================================================
+  // 2e. UNIVERSAL INDUSTRIAL KNOWLEDGE: REFRIGERATION CYCLES & CHILLERS
+  // =========================================================================
+  if (lowerQ.includes('refrigerat') || lowerQ.includes('chiller') || lowerQ.includes('cooling cycle')) {
+    return {
+      success: true,
+      answer: `INDUSTRIAL REFRIGERATION CYCLES & PROCESS COOLING:
+
+1. Vapor-Compression Refrigeration Cycle:
+Transfers heat from a low-temperature process stream to a higher-temperature heat sink through 4 continuous thermodynamic stages:
+
+1. Evaporator (Low P, Low T): Liquid refrigerant absorbs process heat (Q_in) at constant pressure and boils into low-pressure vapor.
+2. Compressor (Work Input W_in): Compresses superheated vapor to high pressure and high temperature.
+3. Condenser (High P, High T): Rejects superheated heat (Q_out) to cooling water or ambient air, condensing refrigerant into high-pressure liquid.
+4. Expansion Valve (Joule-Thomson Isenthalpic Throttling): Sudden pressure reduction drops refrigerant temperature via partial flash evaporation, returning it to the evaporator.
+
+2. Performance Metrics:
+• Coefficient of Performance (COP):
+  COP_cooling = Q_absorbed / W_compressor_in = (h1 - h4) / (h2 - h1)
+  Typical industrial water-cooled chillers achieve COP values between 4.0 and 6.5.
+
+3. Process Plant Applications:
+Used for overhead condenser subcooling in light-hydrocarbon distillation (e.g., C3/C4 splitters), low-temperature reactor jackets, and volatile solvent vapor recovery.`,
+      equipment: 'all',
+      intent: 'refrigeration_explanation',
       timestamp
     };
   }
@@ -870,24 +989,76 @@ Safety Gate State: ${safety.statusLabel}`,
   }
 
   // =========================================================================
-  // 13. EQUIPMENT-SPECIFIC QUESTIONS: WHY IS PUMP/REACTOR/HX/DISTILLATION ABNORMAL?
+  // 12b. PUMP CAVITATION & FLUID MACHINERY
   // =========================================================================
-  if (detectedEquip === 'pump' || lowerQ.includes('pump')) {
-    const flow = pump.flow ?? ((pump.rpm / 2450) * 10.0);
+  if (lowerQ.includes('cavitation') || (lowerQ.includes('npsh') && !lowerQ.includes('compressor'))) {
     return {
       success: true,
-      answer: `Pump RPM has decreased from 2450 to ${Math.round(pump.rpm)} RPM while vibration increased from 0.08 to ${pump.vibration.toFixed(2)} g and discharge flow decreased to ${flow.toFixed(1)} L/min.
+      answer: `CENTRIFUGAL PUMPS & CAVITATION PHENOMENOLOGY:
 
-This combination is consistent with developing mechanical degradation (bearing wear / shaft misalignment).
+1. Physical Mechanism of Cavitation:
+Cavitation occurs when local static pressure at the pump impeller suction eye drops below the liquid's vapor pressure (P_vapor) at the operating temperature:
+• Bubble Formation: Liquid vaporizes instantly, forming microscopic vapor cavities in low-pressure zones.
+• Pressure Recovery: As fluid moves into higher-pressure regions along the impeller vanes, the vapor bubbles collapse violently (micro-implosions in nanoseconds).
+• Shockwave Damage: Local microjets reach velocities up to 1000 m/s and pressures exceeding 1000 bar, causing microscopic pitting, noise ("gravel in the casing"), and high-frequency vibration.
 
-Preventive Risk Score: ${diag.riskScore} / 100 (${diag.riskStage}).`,
+2. Net Positive Suction Head (NPSH) Criteria:
+• NPSHa (Available) = P_suction_absolute/(ρ*g) + v²/(2*g) - P_vapor/(ρ*g) - h_friction_suction
+• Cavitation Margin Rule: To prevent cavitation, engineers require NPSHa > NPSHr (Required by pump manufacturer) by at least 0.5 to 1.0 m (or 1.2x margin).
+
+3. Live P-101 Pump Telemetry:
+• Speed: ${Math.round(pump.rpm)} RPM | Vibration: ${pump.vibration.toFixed(2)} g | Flow: ${(pump.flow ?? 10.0).toFixed(1)} L/min
+• Suction Temp: ${pump.inlet_temperature.toFixed(1)} °C
+${pump.vibration > 0.20 || pump.rpm < 2000 ? '⚠ Notice: Elevated vibration / reduced flow matches hydraulic cavitation or mechanical impeller wear.' : '✓ P-101 operating parameters are nominal with adequate NPSH margin.'}`,
       equipment: 'pump',
-      intent: 'pump_explanation',
+      intent: 'cavitation_explanation',
       timestamp
     };
   }
 
-  if (detectedEquip === 'reactor' || lowerQ.includes('reactor')) {
+  // =========================================================================
+  // 13. EQUIPMENT-SPECIFIC QUESTIONS: WHY IS PUMP/REACTOR/HX/DISTILLATION ABNORMAL?
+  // =========================================================================
+  if (detectedEquip === 'pump' || lowerQ.includes('pump') || lowerQ.includes('p-101') || lowerQ.includes('p101')) {
+    const isAskingFaultOrLive = lowerQ.includes('abnormal') || lowerQ.includes('fault') || lowerQ.includes('why') || lowerQ.includes('check') || lowerQ.includes('status') || lowerQ.includes('my pump') || lowerQ.includes('p-101') || isAnomaly;
+    if (isAskingFaultOrLive) {
+      const flow = pump.flow ?? ((pump.rpm / 2450) * 10.0);
+      return {
+        success: true,
+        answer: `Pump RPM has decreased from 2450 to ${Math.round(pump.rpm)} RPM while vibration increased from 0.08 to ${pump.vibration.toFixed(2)} g and discharge flow decreased to ${flow.toFixed(1)} L/min.
+
+This combination is consistent with developing mechanical degradation (bearing wear / shaft misalignment).
+
+Preventive Risk Score: ${diag.riskScore} / 100 (${diag.riskStage}).`,
+        equipment: 'pump',
+        intent: 'pump_explanation',
+        timestamp
+      };
+    }
+
+    return {
+      success: true,
+      answer: `CENTRIFUGAL PUMPS (P-101):
+
+1. Working Principle:
+Centrifugal pumps convert rotational kinetic energy from an electric motor/drive into hydrodynamic pressure energy:
+• Impeller Eye: Fluid enters axially through the suction eye.
+• Vane Acceleration: Rotating backward-curved vanes accelerate fluid radially outward at high velocity.
+• Volute Casing / Diffuser: Expanding cross-sectional area decelerates the high-velocity fluid, converting kinetic energy into static discharge pressure (Bernoulli principle).
+
+2. Key Performance Parameters:
+• Flow Rate (Q), Total Dynamic Head (H = ΔP / ρg), Power Consumption (P = ρ*g*Q*H / η), and Efficiency (η).
+• Affinity Laws: Q ∝ N, H ∝ N², Power ∝ N³ (where N is rotational speed in RPM).
+
+3. Live P-101 Status:
+• Speed: ${Math.round(pump.rpm)} RPM | Vibration: ${pump.vibration.toFixed(2)} g | Flow: ${(pump.flow ?? 10.0).toFixed(1)} L/min.`,
+      equipment: 'pump',
+      intent: 'pump_general',
+      timestamp
+    };
+  }
+
+  if (detectedEquip === 'reactor' || lowerQ.includes('reactor') || lowerQ.includes('r-101') || lowerQ.includes('r101')) {
     return {
       success: true,
       answer: `Reactor temperature has increased to ${reactor.temperature.toFixed(1)} °C and vessel pressure has escalated to ${reactor.pressure.toFixed(2)} bar while cooling status is ${reactor.cooling_status === 1 ? 'ACTIVE (DEGRADED)' : 'TRIPPED/OFF'}.
@@ -901,7 +1072,7 @@ Safety Directive: ${safety.directive}`,
     };
   }
 
-  if (detectedEquip === 'heat_exchanger' || lowerQ.includes('heat exchanger')) {
+  if (detectedEquip === 'heat_exchanger' || lowerQ.includes('heat exchanger') || lowerQ.includes('e-101') || lowerQ.includes('e101')) {
     return {
       success: true,
       answer: `Heat exchanger thermal difference (ΔT) has dropped to ${hx.temperature_difference.toFixed(1)} °C (Nominal: 12.9 °C) with heat transfer efficiency at ${(hx.efficiency ?? hx.heat_transfer_indicator).toFixed(1)}%.
@@ -913,7 +1084,7 @@ This collapse in thermal gradient indicates tube wall scale fouling and increase
     };
   }
 
-  if (detectedEquip === 'distillation' || lowerQ.includes('distillation')) {
+  if (detectedEquip === 'distillation' || lowerQ.includes('distillation') || lowerQ.includes('d-101') || lowerQ.includes('d101')) {
     return {
       success: true,
       answer: `Distillation column reflux ratio has dropped to ${dist.reflux_ratio.toFixed(2)} L/D while top overhead temperature has risen to ${dist.top_temperature.toFixed(1)} °C.

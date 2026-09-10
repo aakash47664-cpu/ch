@@ -175,6 +175,9 @@ async function queryIndustrialLlm({
   const baseUrl = process.env.GROQ_API_BASE || process.env.OPENAI_API_BASE || (isGroq ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions');
   const model = process.env.GROQ_MODEL || process.env.AI_MODEL || (isGroq ? 'llama-3.3-70b-versatile' : 'gpt-4o-mini');
 
+  const actualUserMessage = String(message || '').trim();
+  console.log("CHEMDIAG GROQ USER MESSAGE:", actualUserMessage);
+
   // Format recent conversation window (last 10 turns)
   const formattedHistory = (conversation || [])
     .slice(-10)
@@ -184,10 +187,18 @@ async function queryIndustrialLlm({
       content: String(turn.text || turn.content || turn.message)
     }));
 
+  if (
+    formattedHistory.length > 0 &&
+    formattedHistory[formattedHistory.length - 1].role === 'user' &&
+    formattedHistory[formattedHistory.length - 1].content.trim() === actualUserMessage
+  ) {
+    formattedHistory.pop();
+  }
+
   const messages = [
     { role: 'system', content: systemPrompt },
     ...formattedHistory,
-    { role: 'user', content: message }
+    { role: 'user', content: actualUserMessage }
   ];
 
   const controller = new AbortController();

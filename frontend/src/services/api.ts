@@ -52,18 +52,22 @@ export async function sendAiChatMessage(
   equipment?: string,
   processContext?: any
 ): Promise<ChatResponse> {
+  const cleanHistory = (history || [])
+    .filter(h => h && (h.text || (h as any).content))
+    .map(h => ({
+      sender: h.sender,
+      role: (h.sender === 'user' || (h as any).role === 'user') ? 'user' : 'assistant',
+      text: h.text || (h as any).content,
+      content: h.text || (h as any).content
+    }));
+
   const res = await fetch(`${API_BASE}/ai/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       message,
-      conversation: history.map(h => ({
-        sender: h.sender,
-        role: h.sender === 'user' ? 'user' : 'assistant',
-        text: h.text,
-        content: h.text
-      })),
-      history: history.map(h => ({ sender: h.sender, text: h.text })),
+      conversation: cleanHistory,
+      history: cleanHistory,
       selectedEquipment: equipment,
       equipment,
       processContext

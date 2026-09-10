@@ -72,6 +72,9 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
     const text = (textToSend || inputValue).trim();
     if (!text || isLoading) return;
 
+    // Safe dev log for verifying message flow
+    console.log("CHEMDIAG USER MESSAGE:", text);
+
     const userMsg: ChatMessage = {
       id: `usr-${Date.now()}`,
       sender: 'user',
@@ -80,13 +83,15 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
       equipment: selectedEquipment
     };
 
+    // Keep prior conversation history separate from the new user message
+    const priorHistory = [...messages];
     const newHistory = [...messages, userMsg];
     setMessages(newHistory);
     setInputValue('');
     setIsLoading(true);
 
     try {
-      const response = await sendAiChatMessage(text, newHistory, selectedEquipment, processContext);
+      const response = await sendAiChatMessage(text, priorHistory, selectedEquipment, processContext);
       const replyText = response.response || response.answer || "Operating nominally within design tolerances.";
       const aiMsg: ChatMessage = {
         id: `ai-${Date.now()}`,

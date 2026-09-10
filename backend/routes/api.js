@@ -309,11 +309,32 @@ export function createApiRouter({
         processContext = null
       } = req.body;
 
-      if (!message || typeof message !== 'string') {
+      // Safe dev log for verifying message flow
+      console.log("CHEMDIAG RECEIVED MESSAGE:", req.body.message);
+
+      if (!message || typeof message !== 'string' || !message.trim()) {
         return res.status(400).json({ success: false, error: 'Message string is required' });
       }
 
-      const effectiveConversation = conversation.length > 0 ? conversation : history;
+      const actualUserMessage = message.trim();
+      const rawConversation = conversation.length > 0 ? conversation : history;
+
+      // Clean conversation history and ensure current user message is not duplicated in history
+      const cleanConversation = rawConversation
+        .filter(turn => turn && (turn.content || turn.text || turn.message))
+        .map(turn => ({
+          role: (turn.role === 'user' || turn.sender === 'user') ? 'user' : 'assistant',
+          content: String(turn.content || turn.text || turn.message)
+        }));
+
+      if (
+        cleanConversation.length > 0 &&
+        cleanConversation[cleanConversation.length - 1].role === 'user' &&
+        cleanConversation[cleanConversation.length - 1].content.trim() === actualUserMessage
+      ) {
+        cleanConversation.pop();
+      }
+
       const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
       const activeFault = simulator.getFault();
       const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
@@ -376,8 +397,8 @@ export function createApiRouter({
       if (isGroqConfigured()) {
         try {
           const groqResponse = await chatWithGroq({
-            message,
-            conversation: effectiveConversation,
+            message: actualUserMessage,
+            conversation: cleanConversation,
             processContext: processContext || liveState,
             liveState
           });
@@ -399,9 +420,9 @@ export function createApiRouter({
       // 2. Seamless Dynamic Industrial Reasoning Engine fallback
       const telemetryHistory = await getRecentTelemetry(null, 20).catch(() => []);
       const fallbackResult = await processAiChat({
-        message,
-        conversation: effectiveConversation,
-        history: effectiveConversation,
+        message: actualUserMessage,
+        conversation: cleanConversation,
+        history: cleanConversation,
         selectedEquipment: selectedEquipment || equipment,
         liveState,
         processContext,
