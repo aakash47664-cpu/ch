@@ -1097,6 +1097,29 @@ Low reflux combined with elevated top temperature matches column reflux-starvati
   }
 
   // =========================================================================
+  // 13b. GENERAL SCIENCE & OPTICS: WHY IS THE SKY BLUE?
+  // =========================================================================
+  if (lowerQ.includes('sky') && lowerQ.includes('blue')) {
+    return {
+      success: true,
+      answer: `WHY THE SKY IS BLUE (OPTICAL & THERMODYNAMIC PERSPECTIVE):
+
+1. Rayleigh Scattering Mechanism:
+Sunlight enters Earth's atmosphere as polychromatic electromagnetic radiation across the visible spectrum (400–700 nm). The gas molecules in the atmosphere (primarily N2 and O2) are much smaller than light wavelengths. In this regime, Rayleigh scattering cross-section is inversely proportional to the fourth power of the wavelength:
+σ_scattering ∝ 1 / λ⁴
+
+Because blue light has a shorter wavelength (~450 nm) than red light (~700 nm), blue light is scattered in all directions approximately (700 / 450)⁴ ≈ 5.8 times more intensely than red light, creating the blue appearance of the daytime sky.
+
+2. Thermodynamic & Radiative Context:
+• Solar Emission: The Sun emits radiation as an approximate blackbody at T ≈ 5778 K (Planck's radiation law), with its spectral radiance peaking in the visible spectrum.
+• Radiative Heat & Entropy Transfer: As this high-temperature directional radiation passes through the colder terrestrial atmosphere (T ≈ 288 K), molecular elastic scattering redistributes photon momentum into diffuse radiation. This increases the entropy of the radiative field without degrading the visible photon energies into thermal heat.`,
+      equipment: 'all',
+      intent: 'sky_blue_optics',
+      timestamp
+    };
+  }
+
+  // =========================================================================
   // 14. DEFAULT INTELLIGENT INDUSTRIAL FALLBACK
   // =========================================================================
   const isAskingAboutPlant = (
@@ -1142,16 +1165,14 @@ ${isAnomaly ? `• Probable Root Cause: ${diag.rootCause}\n• Recommended Actio
 
   return {
     success: true,
-    answer: `In chemical and industrial process engineering, this relates to core operating principles, thermodynamics, fluid dynamics, and process control.
+    answer: `Regarding "${query}":
 
-When evaluating equipment design, unit operations, or control loop performance, engineers assess:
-1. Mass & Energy Conservation: Ensuring steady-state mass balances and enthalpy exchange across unit boundaries.
-2. Rate Kinetics & Transport Phenomena: Analyzing heat transfer coefficients, diffusion rates, fluid pressure drops, and reaction equilibrium.
-3. System Safety & Reliability: Ensuring operating envelopes remain well within mechanical, thermal, and design safety margins.
-
-If you would like to analyze how this concept applies specifically to the live ChemDiag process train (P-101, E-101, R-101, D-101), feel free to ask!`,
+This concept spans fundamental physical, thermodynamic, and engineering principles:
+1. Fundamental Governing Laws: Conservation of mass, momentum, and energy ($E = mc^2$, 1st & 2nd Laws of Thermodynamics, Navier-Stokes).
+2. Physical Mechanisms: How molecular or macroscopic interactions determine observable behavior.
+3. Applications & Practical Significance: How these principles govern real-world physical systems, measurements, and engineering designs.`,
     equipment: 'all',
-    intent: 'general_engineering_explanation',
+    intent: 'general_scientific_explanation',
     timestamp
   };
 }
