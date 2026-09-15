@@ -11,12 +11,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.resolve(__dirname, '../frontend/dist');
 
-import { initDb, recordTelemetry, recordDiagnosis, recordAlert } from './database/db.js';
+import { initDb, recordTelemetry, recordDiagnosis, recordAlert, recordIntelligentAlert, recordProcessHistory } from './database/db.js';
 import { generateSyntheticDataset, FEATURE_NAMES, CLASSES } from './ai/syntheticData.js';
 import { IsolationForest } from './ai/isolationForest.js';
 import { RandomForestClassifier } from './ai/randomForest.js';
 import { diagnoseProcessState } from './ai/rootCauseEngine.js';
 import { ProcessSimulator } from './simulator/processSimulator.js';
+import { EarlyFaultEngine } from './engineering/earlyFaultEngine.js';
 import { createApiRouter } from './routes/api.js';
 
 dotenv.config();
@@ -65,9 +66,36 @@ const randomForest = new RandomForestClassifier(25, 8, 4);
 randomForest.fit(syntheticData, FEATURE_NAMES, CLASSES);
 
 // ----------------------------------------------------
-// 3. Process Simulator
+// 3. Process Simulator & Early Fault Engine
 // ----------------------------------------------------
 const simulator = new ProcessSimulator();
+const earlyFaultEngine = new EarlyFaultEngine();
+
+// Initial baseline telemetry for early fault engine
+let latestEarlyFaultAssessment = earlyFaultEngine.processTelemetry({
+  pump_rpm: 2450,
+  pump_vibration: 0.08,
+  pump_flow: 10.0,
+  pump_discharge_pressure: 2.80,
+  pump_inlet_temperature: 25.2,
+  pump_outlet_temperature: 38.1,
+  hx_inlet_temp: 38.1,
+  hx_outlet_temp: 25.2,
+  hx_delta_t: 12.9,
+  hx_efficiency: 95.0,
+  hx_flow: 9.9,
+  reactor_temp: 65.0,
+  reactor_pressure: 2.05,
+  reactor_level: 50.0,
+  reactor_feed_flow: 9.8,
+  reactor_cooling_status: 1,
+  reactor_agitator_speed: 350,
+  dist_reflux_ratio: 1.85,
+  dist_top_temp: 76.5,
+  dist_bottom_temp: 98.4,
+  dist_pressure: 2.10,
+  dist_feed_flow: 9.7
+}, 'normal');
 
 // Latest explainable diagnosis cache
 let latestDiagnosis = {
@@ -98,6 +126,10 @@ function updateLatestDiagnosis(diag) {
   latestDiagnosis = diag;
 }
 
+function getLatestEarlyFaultAssessment() {
+  return latestEarlyFaultAssessment;
+}
+
 // ----------------------------------------------------
 // 4. API Routes
 // ----------------------------------------------------
@@ -108,6 +140,7 @@ app.use('/api', createApiRouter({
   hardwareState,
   getLatestDiagnosis,
   updateLatestDiagnosis,
+  getLatestEarlyFaultAssessment,
   setOperatorApprovedState
 }));
 
@@ -203,6 +236,7 @@ function buildBroadcastPayload() {
     timestamp: new Date().toISOString(),
     active_fault_mode: simulator.getFault(),
     fault_severity: simulator.getFaultSeverity(),
+    is_paused: simState.is_paused,
     esp32_status: {
       connected: isHardwareOnline,
       status: isHardwareOnline ? 'REAL HARDWARE CONNECTED' : 'ESP32 OFFLINE',
@@ -250,8 +284,21 @@ function buildBroadcastPayload() {
       }
     },
     streams: simState.streams,
-    controls: simState.manual_overrides,
-    diagnosis: latestDiagnosis
+    workflow: simState.workflow,
+    controls: simState.controls,
+    active_alerts: simState.active_alerts || [],
+    alert_summary: simState.alert_summary || simulator.getAlertSummary(),
+    alarms: simState.active_alerts || [], // alias for backward compatibility
+    diagnosis: latestDiagnosis,
+    // CONTINUOUS PROCESS HEALTH & EARLY FAULT DETECTION DATA
+    process_health: latestEarlyFaultAssessment.process_health,
+    equipment_health: latestEarlyFaultAssessment.equipment_health,
+    early_warnings: latestEarlyFaultAssessment.early_warnings,
+    what_changed: latestEarlyFaultAssessment.what_changed,
+    watch_list: latestEarlyFaultAssessment.watch_list,
+    causal_propagation: latestEarlyFaultAssessment.causal_propagation,
+    timeline_events: latestEarlyFaultAssessment.timeline_events,
+    all_metrics: latestEarlyFaultAssessment.all_metrics
   };
 }
 
@@ -291,26 +338,43 @@ setInterval(async () => {
       pump_rpm: useRealPump ? hardwareState.rpm : simState.pump.rpm,
       pump_vibration: useRealPump ? hardwareState.vibration : simState.pump.vibration,
       pump_flow: simState.pump.flow,
+      pump_discharge_pressure: simState.pump.discharge_pressure,
+      pump_suction_pressure: simState.pump.suction_pressure,
       pump_inlet_temperature: useRealPump ? hardwareState.inlet_temperature : simState.pump.inlet_temperature,
       pump_outlet_temperature: useRealPump ? hardwareState.outlet_temperature : simState.pump.outlet_temperature,
       // Heat Exchanger
+      hx_inlet_temp: useRealExchanger ? hardwareState.inlet_temperature : simState.heatExchanger.inlet_temperature,
+      hx_outlet_temp: useRealExchanger ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature,
+      hx_efficiency: simState.heatExchanger.efficiency,
+      hx_delta_t: simState.heatExchanger.temperature_difference,
+      hx_flow: simState.heatExchanger.flow,
       heat_exchanger_inlet_temperature: useRealExchanger ? hardwareState.inlet_temperature : simState.heatExchanger.inlet_temperature,
       heat_exchanger_outlet_temperature: useRealExchanger ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature,
       heat_exchanger_efficiency: simState.heatExchanger.efficiency,
       heat_exchanger_indicator: useRealExchanger ? 92.0 : simState.heatExchanger.heat_transfer_indicator,
       // Reactor
+      reactor_temp: simState.reactor.temperature,
       reactor_temperature: simState.reactor.temperature,
       reactor_pressure: simState.reactor.pressure,
       reactor_level: simState.reactor.level,
+      reactor_feed_flow: simState.reactor.feed_flow,
       reactor_agitator_speed: simState.reactor.agitator_speed,
       reactor_cooling_status: simState.reactor.cooling_status,
       // Distillation
+      dist_top_temp: simState.distillation.top_temperature,
+      dist_bottom_temp: simState.distillation.bottom_temperature,
+      dist_pressure: simState.distillation.pressure,
+      dist_feed_flow: simState.distillation.feed_flow,
+      dist_reflux_ratio: simState.distillation.reflux_ratio,
       distillation_top_temperature: simState.distillation.top_temperature,
       distillation_bottom_temperature: simState.distillation.bottom_temperature,
       distillation_pressure: simState.distillation.pressure,
       distillation_level: simState.distillation.level,
       distillation_reflux_ratio: simState.distillation.reflux_ratio
     };
+
+    // 2b. Compute Continuous Early-Fault & Process Health Assessment
+    latestEarlyFaultAssessment = earlyFaultEngine.processTelemetry(telemetryVector, activeFault);
 
     // Features for ML models
     const mlSample = {
@@ -367,6 +431,36 @@ setInterval(async () => {
       await recordTelemetry('distillation', 'simulated', simState.distillation);
       if (!isHardwareOnline) {
         await recordTelemetry('pump', 'demo', simState.pump);
+      }
+    }
+
+    // Persist timestamped process history trends every 2 seconds
+    if (tickCount % 2 === 0) {
+      await recordProcessHistory({
+        pump_rpm: telemetryVector.pump_rpm,
+        pump_flow: telemetryVector.pump_flow,
+        pump_vibration: telemetryVector.pump_vibration,
+        pump_suction_pressure: simState.pump.suction_pressure,
+        pump_discharge_pressure: simState.pump.discharge_pressure,
+        hx_inlet_temp: telemetryVector.heat_exchanger_inlet_temperature,
+        hx_outlet_temp: telemetryVector.heat_exchanger_outlet_temperature,
+        hx_delta_t: simState.heatExchanger.temperature_difference,
+        hx_flow: simState.heatExchanger.flow,
+        reactor_feed_flow: simState.reactor.feed_flow,
+        reactor_temp: simState.reactor.temperature,
+        reactor_pressure: simState.reactor.pressure,
+        reactor_level: simState.reactor.level,
+        dist_feed_flow: simState.distillation.feed_flow,
+        dist_top_temp: simState.distillation.top_temperature,
+        dist_bottom_temp: simState.distillation.bottom_temperature,
+        dist_pressure: simState.distillation.pressure,
+        dist_reflux_ratio: simState.distillation.reflux_ratio
+      });
+
+
+      // Synchronize active Intelligent Alerts to database
+      for (const al of (simState.active_alerts || [])) {
+        await recordIntelligentAlert(al);
       }
     }
 

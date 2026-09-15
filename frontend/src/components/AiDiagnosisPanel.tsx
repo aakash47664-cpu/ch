@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Diagnosis, EquipmentItem, PumpData, HeatExchangerData, ReactorData, DistillationData } from '../types';
 import { approveOperatorRecommendation } from '../services/api';
 import { AiChatPanel } from './AiChatPanel';
+import { WhatIfPanel } from './WhatIfPanel';
 import {
   ShieldAlert,
   Wrench,
@@ -19,7 +20,8 @@ import {
   Check,
   RotateCcw,
   BarChart3,
-  Cpu
+  Cpu,
+  Sliders
 } from 'lucide-react';
 
 interface AiDiagnosisPanelProps {
@@ -38,11 +40,18 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
   equipment,
   initialChatEquipment
 }) => {
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'chat'>('pipeline');
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'chat' | 'whatif'>('pipeline');
   const [chatEquipment, setChatEquipment] = useState<string | undefined>(initialChatEquipment);
   const [showTooltip, setShowTooltip] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
   const [localApproved, setLocalApproved] = useState(false);
+
+  useEffect(() => {
+    if (initialChatEquipment) {
+      setChatEquipment(initialChatEquipment);
+      setActiveTab('chat');
+    }
+  }, [initialChatEquipment]);
 
   const isAnomaly = diagnosis.anomaly && diagnosis.severity !== 'NORMAL';
   const isUnknown = !!diagnosis.is_unknown_fault;
@@ -136,6 +145,14 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
               <MessageSquare size={12} />
               <span>INDUSTRIAL AI</span>
               <span className="copilot-pill">UNIVERSAL</span>
+            </button>
+            <button
+              className={`ai-mode-btn ${activeTab === 'whatif' ? 'active' : ''}`}
+              onClick={() => setActiveTab('whatif')}
+            >
+              <Sliders size={12} />
+              <span>WHAT-IF</span>
+              <span className="copilot-pill" style={{ background: 'rgba(59, 130, 246, 0.15)', color: 'var(--primary-blue)', border: '1px solid rgba(59, 130, 246, 0.3)' }}>SIMULATOR</span>
             </button>
           </div>
 
@@ -491,6 +508,18 @@ export const AiDiagnosisPanel: React.FC<AiDiagnosisPanelProps> = ({
           <AiChatPanel
             selectedEquipment={chatEquipment}
             onClearSelectedEquipment={() => setChatEquipment(undefined)}
+            processContext={{
+              diagnosis,
+              equipment
+            }}
+          />
+        </div>
+      )}
+
+      {/* MODE 3: WHAT-IF ENGINEERING SIMULATOR */}
+      {activeTab === 'whatif' && (
+        <div style={{ padding: '14px 18px 16px' }}>
+          <WhatIfPanel
             processContext={{
               diagnosis,
               equipment

@@ -1,6 +1,7 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import 'katex/dist/katex.min.css';
 import './styles.css';
 
 interface ErrorBoundaryProps {

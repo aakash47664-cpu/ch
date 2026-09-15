@@ -1629,9 +1629,9 @@ Track continuous parameter derivatives to detect slope acceleration before criti
     lowerQ.includes('action') ||
     lowerQ.includes('recommendation') ||
     (lowerQ.includes('what should i check') && !prevWasCavitation && !prevWasPID && !prevWasCompressor)) &&
-    !isCavitationTopic &&
-    !isPIDTopic &&
-    !isCompressorTopic
+    !lowerQ.includes('cavitation') &&
+    !lowerQ.includes('pid') &&
+    !lowerQ.includes('compressor')
   ) {
     if (!isAnomaly) {
       return {
@@ -2062,12 +2062,7 @@ ${isAnomaly ? `• Probable Root Cause: ${diag.rootCause}\n• Recommended Actio
 
   return {
     success: true,
-    answer: `Regarding "${query}":
-
-This concept spans fundamental physical, thermodynamic, and engineering principles:
-1. Fundamental Governing Laws: Conservation of mass, momentum, and energy ($E = mc^2$, 1st & 2nd Laws of Thermodynamics, Navier-Stokes).
-2. Physical Mechanisms: How molecular or macroscopic interactions determine observable behavior.
-3. Applications & Practical Significance: How these principles govern real-world physical systems, measurements, and engineering designs.`,
+    answer: `General process and chemical engineering inquiries regarding "${query}" are processed by the active ChemDiag Industrial AI cloud model (Google Gemini / Groq). Please ensure the AI engine is selected.`,
     equipment: 'all',
     intent: 'general_scientific_explanation',
     timestamp

@@ -3,7 +3,8 @@ import {
   ProcessUpdatePayload,
   FaultMode,
   TimeSeriesPoint,
-  AlertItem
+  AlertItem,
+  IntelligentAlert
 } from './types';
 import { wsClient } from './services/websocket';
 import { fetchAlerts, setDemoFault } from './services/api';
@@ -15,21 +16,32 @@ import { AiDiagnosisPanel } from './components/AiDiagnosisPanel';
 import { EquipmentCardsGrid } from './components/EquipmentCard';
 import { LiveCharts } from './components/LiveCharts';
 import { AlertsPanel } from './components/AlertsPanel';
+import { ActiveAlertsCard } from './components/ActiveAlertsCard';
+import { ProcessHealthHeader } from './components/ProcessHealthHeader';
+import { EquipmentHealthGrid } from './components/EquipmentHealthGrid';
+import { EarlyWarningsSection } from './components/EarlyWarningsSection';
+import { WatchListAndChanges } from './components/WatchListAndChanges';
+import { EarlyWarningTimeline } from './components/EarlyWarningTimeline';
+import { EquipmentDetailDrawer } from './components/EquipmentDetailDrawer';
+import { EarlyFaultMonitoringCockpit } from './components/EarlyFaultMonitoringCockpit';
+import { ProcessWorkflowSection } from './components/ProcessWorkflowSection';
 
 import {
   LayoutDashboard,
   Activity,
   Flame,
   Atom,
+  Cpu,
   Layers,
   BrainCircuit,
   Bell,
-  Cpu,
   CheckCircle2,
   AlertTriangle,
   MessageSquare,
   Network
 } from 'lucide-react';
+
+
 
 const INITIAL_STATE: ProcessUpdatePayload = {
   type: 'PROCESS_UPDATE',
@@ -94,11 +106,19 @@ const INITIAL_STATE: ProcessUpdatePayload = {
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'flowsheet' | 'pump' | 'heat_exchanger' | 'reactor' | 'distillation' | 'ai_diagnosis' | 'alerts'
+    | 'overview'
+    | 'flowsheet'
+    | 'pump'
+    | 'heat_exchanger'
+    | 'reactor'
+    | 'distillation'
+    | 'ai_diagnosis'
+    | 'alerts'
   >('overview');
 
   const [selectedEquipment, setSelectedEquipment] = useState<string>('pump');
   const [chatEquipment, setChatEquipment] = useState<string | undefined>();
+  const [inspectEquipmentId, setInspectEquipmentId] = useState<string | null>(null);
   const [state, setState] = useState<ProcessUpdatePayload>(INITIAL_STATE);
   const [timeSeries, setTimeSeries] = useState<TimeSeriesPoint[]>(() => {
     return Array.from({ length: 15 }, (_, i) => ({
@@ -122,7 +142,10 @@ export const App: React.FC = () => {
   useEffect(() => {
     fetchAlerts()
       .then((data) => setAlerts(data))
-      .catch((err) => console.warn('Alerts fetch warning:', err.message));
+      .catch((err) => {
+        console.warn('Alerts fetch warning:', err.message);
+        setAlerts([]);
+      });
   }, []);
 
   // WebSocket Live Stream Subscription
@@ -154,10 +177,11 @@ export const App: React.FC = () => {
       // Update active alerts list if new fault
       if (payload.diagnosis.anomaly && payload.diagnosis.severity !== 'NORMAL') {
         setAlerts((prev) => {
-          const alertExists = prev.some(
-            (a) => a.equipment === payload.diagnosis.equipment && a.fault === payload.diagnosis.probable_fault
+          const safePrev = Array.isArray(prev) ? prev : [];
+          const alertExists = safePrev.some(
+            (a) => a && a.equipment === payload.diagnosis.equipment && a.fault === payload.diagnosis.probable_fault
           );
-          if (alertExists) return prev;
+          if (alertExists) return safePrev;
           const newAlert: AlertItem = {
             id: Date.now(),
             timestamp: payload.diagnosis.timestamp,
@@ -166,7 +190,7 @@ export const App: React.FC = () => {
             root_cause: payload.diagnosis.root_cause,
             severity: payload.diagnosis.severity
           };
-          return [newAlert, ...prev.slice(0, 25)];
+          return [newAlert, ...safePrev.slice(0, 25)];
         });
       }
     });
@@ -186,10 +210,31 @@ export const App: React.FC = () => {
   };
 
   const handleAskAiAboutEquipment = (equipId: string) => {
+    setSelectedEquipment(equipId);
     setChatEquipment(equipId);
     if (activeTab !== 'overview' && activeTab !== 'ai_diagnosis') {
       setActiveTab('overview');
     }
+  };
+
+  const handleAnalyzeAlertWithAi = (alert: IntelligentAlert) => {
+    const equipLower = alert.equipment.toLowerCase();
+    let equipId = 'pump';
+    if (equipLower.includes('p-101') || equipLower.includes('pump')) equipId = 'pump';
+    else if (equipLower.includes('e-101') || equipLower.includes('exchanger')) equipId = 'heat_exchanger';
+    else if (equipLower.includes('r-101') || equipLower.includes('reactor')) equipId = 'reactor';
+    else if (equipLower.includes('d-101') || equipLower.includes('distill') || equipLower.includes('column')) equipId = 'distillation';
+
+    setSelectedEquipment(equipId);
+    setChatEquipment(equipId);
+    setActiveTab('overview');
+
+    setTimeout(() => {
+      const el = document.querySelector('.ai-diagnosis-panel');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 100);
   };
 
   // Evaluate equipment health for sidebar dots
@@ -200,6 +245,7 @@ export const App: React.FC = () => {
   const distIsWarning = (state.equipment.distillation.data.reflux_ratio || 0) < 1.15;
   const isAnomaly = state.diagnosis.anomaly && state.diagnosis.severity !== 'NORMAL';
   const isUnknown = !!state.diagnosis.is_unknown_fault;
+  const activeAlertCount = (state.active_alerts || []).length;
 
   return (
     <div className="app-container">
@@ -300,10 +346,10 @@ export const App: React.FC = () => {
           >
             <div className="nav-item-left">
               <Bell />
-              <span>Alerts History</span>
+              <span>Active Alerts</span>
             </div>
-            <span className={`nav-alert-badge ${alerts.length === 0 ? 'zero' : ''}`}>
-              {alerts.length}
+            <span className={`nav-alert-badge ${activeAlertCount === 0 ? 'zero' : ''}`}>
+              {activeAlertCount}
             </span>
           </button>
         </nav>
@@ -312,7 +358,7 @@ export const App: React.FC = () => {
         <div className="sidebar-status-block">
           <span className="status-block-title">Process Telemetry & Digital Twin</span>
           <div className="status-item">
-            <span className="status-label">FastAPI / Node Backend</span>
+            <span className="status-label">Node Backend API</span>
             <span className="status-val"><span className="status-dot pulse"></span> Online</span>
           </div>
           <div className="status-item">
@@ -346,6 +392,9 @@ export const App: React.FC = () => {
         <Navbar
           esp32Connected={state.esp32_status.connected}
           esp32Message={state.esp32_status.message}
+          alertSummary={state.alert_summary}
+          activeAlertCount={activeAlertCount}
+          onAlertsClick={() => setActiveTab('alerts')}
         />
 
         <main className="dashboard-canvas">
@@ -358,23 +407,42 @@ export const App: React.FC = () => {
 
           {/* TAB 1: OVERVIEW */}
           {activeTab === 'overview' && (
-            <div className="tab-content-anim">
-              {/* ASPEN PFD WITH CONTINUOUS CAUSAL STREAM PROPAGATION */}
+            <div className="tab-content-anim space-y-4">
+              {/* 0. ADJUSTABLE CAUSAL PROCESS WORKFLOW */}
+              <ProcessWorkflowSection
+                state={state}
+                selectedEquipment={selectedEquipment}
+                onSelectEquipment={(id) => setSelectedEquipment(id)}
+                onAskAiAboutEquipment={handleAskAiAboutEquipment}
+              />
+
+              {/* 1. COMPACT & INTERACTIVE EARLY FAULT MONITORING COCKPIT */}
+              <EarlyFaultMonitoringCockpit
+                state={state}
+                timeSeries={timeSeries}
+                selectedEquipment={selectedEquipment}
+                onSelectEquipment={(id) => setSelectedEquipment(id)}
+                onAskAiAboutEquipment={handleAskAiAboutEquipment}
+              />
+
+              {/* 2. ASPEN PFD WITH CONTINUOUS CAUSAL STREAM PROPAGATION */}
               <ProcessFlowsheet
                 state={state}
                 selectedEquipment={selectedEquipment}
                 onSelectEquipment={(id) => setSelectedEquipment(id)}
                 onAskAiAbout={handleAskAiAboutEquipment}
+                timeSeries={timeSeries}
+                onSelectFault={handleSelectFault}
               />
 
-              {/* CORE NOVELTY: AI DIAGNOSIS, XAI, PROGNOSIS, PREVENTIVE RISK & SAFETY GATE PANEL */}
+              {/* 3. CORE NOVELTY: AI DIAGNOSIS, XAI, PROGNOSIS, PREVENTIVE RISK & SAFETY GATE PANEL */}
               <AiDiagnosisPanel
                 diagnosis={state.diagnosis}
                 equipment={state.equipment}
                 initialChatEquipment={chatEquipment}
               />
 
-              {/* 4 MAIN EQUIPMENT CARDS */}
+              {/* 4. 4 MAIN EQUIPMENT SENSOR DETAIL CARDS */}
               <EquipmentCardsGrid
                 pump={state.equipment.pump}
                 heatExchanger={state.equipment.heat_exchanger}
@@ -384,26 +452,55 @@ export const App: React.FC = () => {
                 onAskAiAbout={handleAskAiAboutEquipment}
               />
 
-              {/* LIVE TIME-SERIES CHARTS WITH RISK PROGRESSION TIMELINE */}
+              {/* 5. LIVE TIME-SERIES CHARTS WITH RISK PROGRESSION TIMELINE */}
               <LiveCharts
                 data={timeSeries}
                 selectedEquipment={selectedEquipment}
                 onSelectEquipment={setSelectedEquipment}
               />
 
-              {/* SYSTEM ALERTS AUDIT LOG */}
+              {/* 6. ACTIVE INTELLIGENT ALERTS & AUDIT LOG */}
+              <ActiveAlertsCard
+                alerts={state.active_alerts || []}
+                alertSummary={state.alert_summary}
+                selectedEquipment={selectedEquipment}
+                onSelectEquipment={(id) => setSelectedEquipment(id)}
+                onAnalyzeWithAi={handleAnalyzeAlertWithAi}
+                onAlertsUpdated={() => {
+                  fetchAlerts().then((data) => setAlerts(data)).catch(() => setAlerts([]));
+                }}
+              />
+
               <AlertsPanel alerts={alerts} />
             </div>
           )}
 
           {/* TAB 2: FLOWSHEET DEDICATED VIEW */}
           {activeTab === 'flowsheet' && (
-            <div className="tab-content-anim">
+            <div className="tab-content-anim space-y-4">
+              <ProcessWorkflowSection
+                state={state}
+                selectedEquipment={selectedEquipment}
+                onSelectEquipment={(id) => setSelectedEquipment(id)}
+                onAskAiAboutEquipment={handleAskAiAboutEquipment}
+              />
+              <ActiveAlertsCard
+                alerts={state.active_alerts || []}
+                alertSummary={state.alert_summary}
+                selectedEquipment={selectedEquipment}
+                onSelectEquipment={setSelectedEquipment}
+                onAnalyzeWithAi={handleAnalyzeAlertWithAi}
+                onAlertsUpdated={() => {
+                  fetchAlerts().then((data) => setAlerts(data)).catch(() => setAlerts([]));
+                }}
+              />
               <ProcessFlowsheet
                 state={state}
                 selectedEquipment={selectedEquipment}
                 onSelectEquipment={setSelectedEquipment}
                 onAskAiAbout={handleAskAiAboutEquipment}
+                timeSeries={timeSeries}
+                onSelectFault={handleSelectFault}
               />
               <LiveCharts
                 data={timeSeries}
@@ -412,6 +509,24 @@ export const App: React.FC = () => {
               />
             </div>
           )}
+
+          {/* TAB: ACTIVE ALERTS DEDICATED VIEW */}
+          {activeTab === 'alerts' && (
+            <div className="tab-content-anim space-y-4">
+              <ActiveAlertsCard
+                alerts={state.active_alerts || []}
+                alertSummary={state.alert_summary}
+                selectedEquipment={selectedEquipment}
+                onSelectEquipment={setSelectedEquipment}
+                onAnalyzeWithAi={handleAnalyzeAlertWithAi}
+                onAlertsUpdated={() => {
+                  fetchAlerts().then((data) => setAlerts(data)).catch(() => setAlerts([]));
+                }}
+              />
+              <AlertsPanel alerts={alerts} />
+            </div>
+          )}
+
 
           {/* TAB 3: PUMP DETAIL */}
           {activeTab === 'pump' && (
@@ -709,15 +824,23 @@ export const App: React.FC = () => {
               />
             </div>
           )}
-
-          {/* TAB 8: ALERTS AUDIT LOG */}
-          {activeTab === 'alerts' && (
-            <div className="tab-content-anim">
-              <AlertsPanel alerts={alerts} />
-            </div>
-          )}
         </main>
       </div>
+
+      {/* EQUIPMENT DETAIL INSPECTION DRAWER */}
+      {inspectEquipmentId && state.equipment_health && (
+        <EquipmentDetailDrawer
+          equipmentId={inspectEquipmentId}
+          equipmentHealthItem={state.equipment_health[inspectEquipmentId as keyof typeof state.equipment_health]}
+          history={timeSeries}
+          onClose={() => setInspectEquipmentId(null)}
+          onAskAi={(_equipName) => {
+            const equipId = inspectEquipmentId || 'pump';
+            setInspectEquipmentId(null);
+            handleAskAiAboutEquipment(equipId);
+          }}
+        />
+      )}
     </div>
   );
 };

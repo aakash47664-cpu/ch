@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
-import { sendAiChatMessage } from '../services/api';
+import { sendAiChatMessage, fetchAiHealth } from '../services/api';
+import { FormattedChatMessage } from './FormattedChatMessage';
 import {
   BrainCircuit,
   Send,
@@ -12,7 +13,8 @@ import {
   CheckCircle2,
   Bot,
   User,
-  ChevronRight
+  ChevronRight,
+  Layers
 } from 'lucide-react';
 
 interface AiChatPanelProps {
@@ -25,9 +27,9 @@ const INITIAL_MESSAGES: ChatMessage[] = [
   {
     id: 'init-1',
     sender: 'ai',
-    text: "Hello! I am ChemDiag Industrial AI. Ask me anything about chemical engineering, equipment operations, process thermodynamics, control loops, or live process behavior across P-101, E-101, R-101, and D-101.",
+    text: "Hello! I am ChemDiag Industrial AI powered by Google Gemini & Groq Cloud. Ask me anything about chemical engineering, equipment operations, process thermodynamics, control loops, or live process behavior across P-101, E-101, R-101, and D-101.",
     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    provider: 'industrial_ai'
+    provider: 'Gemini'
   }
 ];
 
@@ -52,6 +54,9 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
   const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<'gemini' | 'groq'>('gemini');
+  const [healthStatus, setHealthStatus] = useState<any>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -63,6 +68,18 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
     scrollToBottom();
   }, [messages, isLoading]);
 
+  // Load AI Health on mount
+  useEffect(() => {
+    fetchAiHealth()
+      .then(data => {
+        setHealthStatus(data);
+        if (data?.provider === 'Groq' && !data?.providers?.gemini?.configured) {
+          setSelectedProvider('groq');
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Focus input on mount or when equipment changes
   useEffect(() => {
     inputRef.current?.focus();
@@ -72,7 +89,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
     const text = (textToSend || inputValue).trim();
     if (!text || isLoading) return;
 
-    // Safe dev log for verifying message flow
+    // Safe dev log for verifying message flow (no keys)
     console.log("CHEMDIAG USER MESSAGE:", text);
 
     const userMsg: ChatMessage = {
@@ -91,15 +108,21 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
     setIsLoading(true);
 
     try {
-      const response = await sendAiChatMessage(text, priorHistory, selectedEquipment, processContext);
-      const replyText = response.response || response.answer || "Operating nominally within design tolerances.";
+      const response = await sendAiChatMessage(
+        text,
+        priorHistory,
+        selectedEquipment,
+        processContext,
+        selectedProvider
+      );
+      const replyText = response.text || response.response || response.answer || "Operating nominally within design tolerances.";
       const aiMsg: ChatMessage = {
         id: `ai-${Date.now()}`,
         sender: 'ai',
         text: replyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         equipment: response.equipment,
-        provider: response.provider
+        provider: response.provider || selectedProvider
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (err: any) {
@@ -108,7 +131,8 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
         id: `err-${Date.now()}`,
         sender: 'ai',
         text: "Industrial AI is temporarily reconnecting. Please ask your question again, or verify network connectivity.",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        provider: 'Safety Net'
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
@@ -153,19 +177,34 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
               CHEMDIAG INDUSTRIAL AI <span className="copilot-tag">UNIVERSAL INTELLIGENCE</span>
             </div>
             <p className="chat-subtitle">
-              Intelligent Industrial Process Assistant
+              Dual-Engine Industrial Process Intelligence
             </p>
           </div>
         </div>
 
         <div className="chat-header-actions">
+          {/* AI Engine Selector */}
+          <div className="engine-select-container">
+            <span className="engine-select-label">ENGINE:</span>
+            <select
+              className="engine-select-dropdown"
+              value={selectedProvider}
+              onChange={(e) => setSelectedProvider(e.target.value as 'gemini' | 'groq')}
+              title="Select AI Reasoning Engine"
+              aria-label="Select AI Reasoning Engine"
+            >
+              <option value="gemini">Google Gemini (2.5 Flash)</option>
+              <option value="groq">Groq Cloud (Llama 3.3)</option>
+            </select>
+          </div>
+
           {/* AI Online Status Badge */}
           <div
             className="provider-badge rule"
-            title="ChemDiag Industrial AI is active and monitoring live process telemetry"
+            title={`ChemDiag AI is active with ${selectedProvider === 'gemini' ? 'Google Gemini 2.5 Flash' : 'Groq Llama 3.3 70B'}`}
           >
             <span className="copilot-online-dot">●</span>
-            <span>INDUSTRIAL AI ONLINE</span>
+            <span>{selectedProvider === 'gemini' ? 'GEMINI 2.5 FLASH' : 'GROQ LLAMA 3.3'}</span>
           </div>
 
           <button
@@ -219,23 +258,16 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
 
             <div className="message-bubble">
               <div className="message-sender-name">
-                {msg.sender === 'user' ? 'Operator' : 'ChemDiag Industrial AI'}
+                <span>{msg.sender === 'user' ? 'Operator' : 'ChemDiag Industrial AI'}</span>
+                {msg.sender === 'ai' && (
+                  <span className="message-provider-tag">
+                    {msg.provider?.toLowerCase() === 'groq' ? 'GROQ LLAMA 3.3' : 'GEMINI 2.5 FLASH'}
+                  </span>
+                )}
                 <span className="message-timestamp">{msg.timestamp}</span>
               </div>
 
-              <div className="message-body-text">
-                {msg.text.split('\n').map((line, i) => (
-                  <React.Fragment key={i}>
-                    {line.startsWith('•') || line.startsWith('-') ? (
-                      <div className="message-bullet-line">{line}</div>
-                    ) : line.startsWith('CURRENT PROCESS STATUS:') || line.startsWith('RECOMMENDED') || line.startsWith('SEVERITY ASSESSMENT:') || line.startsWith('Evidence:') || line.startsWith('Probable Root Cause:') || line.startsWith('Why AI Diagnosed This:') || line.startsWith('Action:') || line.startsWith('FAULT PROGRESSION') || line.startsWith('WHY DID AI DETECT THIS?') || line.startsWith('PREVENTIVE RISK SCORE:') || line.startsWith('CHEMDIAG DIGITAL TWIN') || line.startsWith('PUMP CAVITATION') || line.startsWith('DYNAMIC COMPRESSORS') || line.startsWith('PROCESS CONTROL') || line.startsWith('DISTILLATION TRAY') || line.startsWith('CHEMICAL REACTOR') || line.startsWith('HEAT EXCHANGER') || line.startsWith('PROCESS SAFETY') ? (
-                      <div className="message-section-heading">{line}</div>
-                    ) : (
-                      <p style={{ margin: line === '' ? '4px 0' : '2px 0' }}>{line}</p>
-                    )}
-                  </React.Fragment>
-                ))}
-              </div>
+              <FormattedChatMessage text={msg.text} isAi={msg.sender === 'ai'} />
             </div>
           </div>
         ))}
@@ -248,7 +280,9 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
             </div>
             <div className="message-bubble loading-bubble">
               <span className="typing-dots"></span>
-              <span className="analyzing-text">Industrial AI is analyzing process state and engineering principles...</span>
+              <span className="analyzing-text">
+                {selectedProvider === 'gemini' ? 'Google Gemini 2.5 Flash' : 'Groq Industrial AI'} is analyzing engineering principles...
+              </span>
             </div>
           </div>
         )}

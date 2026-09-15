@@ -15,8 +15,9 @@ import * as Reaction from './reactionEngineering.js';
 import * as Mass from './massTransfer.js';
 import * as Control from './processControl.js';
 import * as Equipment from './equipment.js';
+import * as WhatIf from './whatIf.js';
 
-export { Units, Fluid, Heat, Thermo, Reaction, Mass, Control, Equipment };
+export { Units, Fluid, Heat, Thermo, Reaction, Mass, Control, Equipment, WhatIf };
 
 /**
  * Standard OpenAI / Groq Tool Calling Schemas for Engineering Calculations
@@ -514,6 +515,25 @@ export const ENGINEERING_TOOL_DEFINITIONS = [
         required: ['diameter', 'height']
       }
     }
+  },
+
+  // 24. What-If Engineering Scenario Simulation
+  {
+    type: 'function',
+    function: {
+      name: 'simulateWhatIfScenario',
+      description: 'Simulates a hypothetical engineering change (e.g. pump RPM, reactor cooling trip, reflux change) on a copy of the flowsheet model without modifying live process state.',
+      parameters: {
+        type: 'object',
+        properties: {
+          equipment: { type: 'string', description: 'pump, heat_exchanger, reactor, distillation' },
+          variable: { type: 'string', description: 'rpm, flow_pct, cooling_status, temperature, reflux_ratio, efficiency' },
+          hypothetical_value: { type: 'number', description: 'Hypothetical numerical value or status (1/0)' },
+          description: { type: 'string', description: 'Summary of the hypothetical scenario' }
+        },
+        required: ['equipment', 'variable', 'hypothetical_value']
+      }
+    }
   }
 ];
 
@@ -543,7 +563,8 @@ export const TOOL_FUNCTION_MAP = {
   calcControllerError: Control.calcControllerError,
   calcPIDOutput: Control.calcPIDOutput,
   calcControlValveCv: Equipment.calcControlValveCv,
-  calcTankVolumeAndHoldTime: Equipment.calcTankVolumeAndHoldTime
+  calcTankVolumeAndHoldTime: Equipment.calcTankVolumeAndHoldTime,
+  simulateWhatIfScenario: (args, liveState) => WhatIf.runWhatIfSimulation(args, liveState)
 };
 
 /**
