@@ -4,13 +4,15 @@ import {
 } from '../../types';
 import { AiDiagnosisPanel } from '../AiDiagnosisPanel';
 import { MlMonitoringWorkspace } from './MlMonitoringWorkspace';
-import { BrainCircuit, Activity, Cpu, Flame, Layers, Sparkles } from 'lucide-react';
+import { AutomaticProblemAnalysisPanel } from '../AutomaticProblemAnalysisPanel';
+import { useAutomaticProblemAnalysis } from '../../hooks/useAutomaticProblemAnalysis';
+import { BrainCircuit, Activity, Cpu, Flame, Layers, Sparkles, Wrench } from 'lucide-react';
 
 interface AiWorkspaceProps {
   state: ProcessUpdatePayload;
   selectedEquipment?: string;
   onNavigateTab?: (tab: 'overview' | 'flowsheet' | 'pump' | 'heat_exchanger' | 'reactor' | 'distillation' | 'ai_diagnosis' | 'alerts') => void;
-  onAskAiAbout?: (unitId: string) => void;
+  onAskAiAbout?: (unitId: string, initialPrompt?: string) => void;
 }
 
 export const AiWorkspace: React.FC<AiWorkspaceProps> = ({
@@ -19,7 +21,32 @@ export const AiWorkspace: React.FC<AiWorkspaceProps> = ({
   onNavigateTab,
   onAskAiAbout
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'ml_monitoring' | 'ai_copilot'>('ml_monitoring');
+  const [activeSubTab, setActiveSubTab] = useState<'auto_analysis' | 'ml_monitoring' | 'ai_copilot'>('auto_analysis');
+  const [copilotInitialPrompt, setCopilotInitialPrompt] = useState<string | undefined>();
+  const [copilotEquipment, setCopilotEquipment] = useState<string | undefined>(selectedEquipment);
+
+  // Automatic AI Problem Analysis hook
+  const {
+    currentAnalysis,
+    activeProblemAnalyses,
+    recentAnalyses,
+    failureHistory,
+    isAnalyzing,
+    lastAnalysisTime,
+    aiError,
+    selectedUnitId,
+    setSelectedUnitId,
+    triggerManualAnalysis
+  } = useAutomaticProblemAnalysis(state);
+
+  const handleAskAiFollowUp = (equipId: string, prompt?: string) => {
+    setCopilotEquipment(equipId);
+    setCopilotInitialPrompt(prompt);
+    setActiveSubTab('ai_copilot');
+    if (onAskAiAbout) {
+      onAskAiAbout(equipId, prompt);
+    }
+  };
 
   return (
     <div className="ai-workspace">
@@ -31,12 +58,12 @@ export const AiWorkspace: React.FC<AiWorkspaceProps> = ({
               <BrainCircuit size={22} />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="workspace-title">CONTINUOUS ML &amp; INDUSTRIAL DECISION ENGINE</h2>
-                <span className="status-badge nominal">ML &amp; AI ENGINE ACTIVE</span>
+                <span className="status-badge nominal">● ML &amp; AI ENGINE ACTIVE</span>
               </div>
               <p className="workspace-subtitle">
-                Dual-Pipeline: Unsupervised Isolation Forest Anomaly Detection + Multi-Class Random Forest Classification &bull; XAI Feature Attribution &bull; Grounded AI Copilot
+                Dual-Pipeline: Unsupervised Isolation Forest Anomaly Detection + Multi-Class Random Forest Classification &bull; Automatic Root-Cause Synthesis &bull; Grounded Industrial AI Copilot
               </p>
             </div>
           </div>
@@ -45,10 +72,18 @@ export const AiWorkspace: React.FC<AiWorkspaceProps> = ({
           <div className="workspace-mode-toggle">
             <button
               type="button"
+              className={`mode-toggle-btn ${activeSubTab === 'auto_analysis' ? 'active' : ''}`}
+              onClick={() => setActiveSubTab('auto_analysis')}
+            >
+              <Wrench size={14} />
+              <span>AUTOMATIC AI PROBLEM ANALYSIS</span>
+            </button>
+            <button
+              type="button"
               className={`mode-toggle-btn ${activeSubTab === 'ml_monitoring' ? 'active' : ''}`}
               onClick={() => setActiveSubTab('ml_monitoring')}
             >
-              <Activity size={15} />
+              <Activity size={14} />
               <span>CONTINUOUS ML MONITORING</span>
             </button>
             <button
@@ -56,35 +91,56 @@ export const AiWorkspace: React.FC<AiWorkspaceProps> = ({
               className={`mode-toggle-btn ${activeSubTab === 'ai_copilot' ? 'active' : ''}`}
               onClick={() => setActiveSubTab('ai_copilot')}
             >
-              <Sparkles size={15} />
-              <span>INDUSTRIAL AI COPILOT &amp; DECISION</span>
+              <Sparkles size={14} />
+              <span>INDUSTRIAL AI COPILOT</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Sub-View 1: ML MONITORING DASHBOARD (Section 17 Structure) */}
+      {/* Sub-View 1: DEDICATED AUTOMATIC AI PROBLEM ANALYSIS (Core Major Feature) */}
+      {activeSubTab === 'auto_analysis' && (
+        <div className="tab-content-anim">
+          <AutomaticProblemAnalysisPanel
+            currentAnalysis={currentAnalysis}
+            activeProblemAnalyses={activeProblemAnalyses}
+            recentAnalyses={recentAnalyses}
+            failureHistory={failureHistory}
+            isAnalyzing={isAnalyzing}
+            lastAnalysisTime={lastAnalysisTime}
+            aiError={aiError}
+            selectedUnitId={selectedUnitId}
+            onSelectUnit={setSelectedUnitId}
+            onManualReanalyze={triggerManualAnalysis}
+            onAskAiFollowUp={handleAskAiFollowUp}
+          />
+        </div>
+      )}
+
+      {/* Sub-View 2: CONTINUOUS ML MONITORING DASHBOARD (Section 17 Structure) */}
       {activeSubTab === 'ml_monitoring' && (
         <div className="tab-content-anim">
           <MlMonitoringWorkspace
             state={state}
             initialEquipmentId={selectedEquipment || 'heat_exchanger'}
             onNavigateTab={onNavigateTab}
-            onAskAiAbout={onAskAiAbout}
+            onAskAiAbout={(unit) => handleAskAiFollowUp(unit)}
           />
         </div>
       )}
 
-      {/* Sub-View 2: INDUSTRIAL AI COPILOT & DECISION ENGINE */}
+      {/* Sub-View 3: INDUSTRIAL AI COPILOT & DECISION ENGINE */}
       {activeSubTab === 'ai_copilot' && (
         <div className="tab-content-anim">
           <AiDiagnosisPanel
             diagnosis={state.diagnosis}
             equipment={state.equipment}
-            initialChatEquipment={selectedEquipment}
+            initialChatEquipment={copilotEquipment}
           />
         </div>
       )}
     </div>
   );
 };
+
+export default AiWorkspace;

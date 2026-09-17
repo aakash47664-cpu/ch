@@ -527,10 +527,19 @@ export interface ProcessUpdatePayload {
   all_metrics?: Record<string, VariableMetric>;
 }
 
+export interface ParameterDeviationRow {
+  parameter: string;
+  baseline: string;
+  current: string;
+  deviation: string;
+  isAnomaly?: boolean;
+}
+
 export interface AutomaticAnalysisItem {
   id: string;
   timestamp: string;
   equipmentId: string;
+  equipmentTag?: string;
   equipmentName: string;
   stage: string;
   stageLabel: string;
@@ -549,7 +558,14 @@ export interface AutomaticAnalysisItem {
   fullExplanation?: string;
   provider?: string;
   baselineComparison?: string;
+  parameterRows?: ParameterDeviationRow[];
+  primaryHypothesis?: string;
+  supportingEvidence?: string[];
   alternativePossibilities?: string[];
+  downstreamImpacts?: Array<{ unitTag: string; unitName?: string; impact: string }>;
+  operatorChecklist?: string[];
+  primaryFaultTag?: string;
+  role?: 'PRIMARY_FAULT' | 'PRIMARY_SOURCE' | 'DOWNSTREAM_IMPACT' | 'NOMINAL' | string;
   isFailureConfirmed?: boolean;
   isUnknownFault?: boolean;
 }
