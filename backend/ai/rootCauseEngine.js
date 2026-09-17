@@ -158,8 +158,8 @@ export function diagnoseProcessState({
   }
 
   // 5. EVALUATE DISTILLATION COLUMN FAULT (EARLY OR CONFIRMED)
-  const isEarlyDist = faultMode === 'early_distillation_reflux_loss' || (faultMode !== 'normal' && dReflux < 1.45 && dReflux >= 1.05);
-  const isConfirmedDist = faultMode === 'distillation_fault' || (faultMode !== 'normal' && ((dReflux < 1.05 && dTopTemp > 77.0) || (dReflux < 0.90) || (mlClass === 'distillation_fault' && dReflux < 1.25)));
+  const isEarlyDist = faultMode === 'early_distillation_reflux_loss' || (faultMode === 'normal' && dReflux < 1.45 && dReflux >= 1.05 && mlAnomaly);
+  const isConfirmedDist = faultMode === 'distillation_fault' || (faultMode === 'normal' && ((mlClass === 'distillation_fault' && mlAnomaly) || (dReflux < 1.05 && dTopTemp > 77.0 && mlAnomaly) || (dReflux < 0.90 && mlAnomaly)));
 
   if (isEarlyDist || isConfirmedDist) {
     const isSevere = dReflux < 0.70 || dTopTemp > 82.0 || dPress > 2.60;
@@ -238,8 +238,8 @@ export function diagnoseProcessState({
   }
 
   // 6. EVALUATE REACTOR COOLING FAILURE / RUNAWAY (EARLY OR CONFIRMED)
-  const isEarlyReactor = faultMode === 'early_reactor_cooling_degradation' || (faultMode !== 'normal' && rTemp > 69.0 && rTemp <= 76.0 && rPress <= 2.50);
-  const isConfirmedReactor = faultMode === 'reactor_cooling_failure' || (faultMode !== 'normal' && (rCooling === 0 || rTemp > 76.0 || rPress > 2.50 || (mlClass === 'reactor_cooling_failure' && rTemp > 70.0)));
+  const isEarlyReactor = faultMode === 'early_reactor_cooling_degradation' || (faultMode === 'normal' && rTemp > 69.0 && rTemp <= 76.0 && rPress <= 2.50 && mlAnomaly);
+  const isConfirmedReactor = faultMode === 'reactor_cooling_failure' || (faultMode === 'normal' && ((mlClass === 'reactor_cooling_failure' && mlAnomaly) || rCooling === 0 || (rTemp > 78.0 && mlAnomaly)));
 
   if (isEarlyReactor || isConfirmedReactor) {
     const isCritical = rTemp > 85.0 || rPress > 3.10 || rCooling === 0;
@@ -319,8 +319,8 @@ export function diagnoseProcessState({
   }
 
   // 7. EVALUATE PUMP MECHANICAL FAULT (EARLY OR CONFIRMED)
-  const isEarlyPump = faultMode === 'early_pump_degradation' || (faultMode !== 'normal' && pVib > 0.16 && pVib <= 0.28 && pRpm >= 2000);
-  const isConfirmedPump = faultMode === 'pump_fault' || (faultMode !== 'normal' && (pVib > 0.28 || pRpm < 2000 || (mlClass === 'pump_fault' && pVib > 0.20)));
+  const isEarlyPump = faultMode === 'early_pump_degradation' || (faultMode === 'normal' && pVib > 0.16 && pVib <= 0.28 && pRpm >= 2000 && mlAnomaly);
+  const isConfirmedPump = faultMode === 'pump_fault' || (faultMode === 'normal' && ((mlClass === 'pump_fault' && mlAnomaly) || (pVib > 0.28 && mlAnomaly) || (pRpm < 2000 && mlAnomaly)));
 
   if (isEarlyPump || isConfirmedPump) {
     const isSevere = pVib > 0.42 || pRpm < 1800;
@@ -400,8 +400,8 @@ export function diagnoseProcessState({
   }
 
   // 8. EVALUATE HEAT EXCHANGER FOULING (EARLY OR CONFIRMED)
-  const isEarlyHx = faultMode === 'early_heat_exchanger_fouling' || (faultMode !== 'normal' && deltaT < 6.5 && deltaT >= 4.0);
-  const isConfirmedHx = faultMode === 'heat_exchanger_fault' || (faultMode !== 'normal' && (deltaT < 4.0 || (mlClass === 'heat_exchanger_fault' && deltaT < 5.5)));
+  const isEarlyHx = faultMode === 'early_heat_exchanger_fouling' || (faultMode === 'normal' && deltaT < 6.5 && deltaT >= 4.0 && mlAnomaly);
+  const isConfirmedHx = faultMode === 'heat_exchanger_fault' || (faultMode === 'normal' && ((mlClass === 'heat_exchanger_fault' && mlAnomaly) || (deltaT < 4.0 && mlAnomaly)));
 
   if (isEarlyHx || isConfirmedHx) {
     const isSevere = deltaT < 2.5;

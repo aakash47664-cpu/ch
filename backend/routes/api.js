@@ -36,19 +36,82 @@ export function createApiRouter({
   getLatestDiagnosis,
   updateLatestDiagnosis,
   getLatestEarlyFaultAssessment,
+  getEquipmentDiagnostics,
+  continuousMlMonitor,
   setOperatorApprovedState
 }) {
   const router = express.Router();
 
-  // 0. Continuous Process Health & Early Fault Endpoint
+  // 0a. Continuous Plant-Wide Equipment ML Diagnostics Endpoint (Single Source of Truth)
+  router.get('/process/diagnostics', (req, res) => {
+    try {
+      const diagnostics = typeof getEquipmentDiagnostics === 'function' 
+        ? getEquipmentDiagnostics() 
+        : (continuousMlMonitor ? continuousMlMonitor.getEquipmentDiagnostics() : {});
+      res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        diagnostics,
+        equipmentDiagnostics: diagnostics
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 0b. Single Equipment Diagnostic Endpoint
+  router.get('/equipment/:id/diagnostics', (req, res) => {
+    try {
+      const { id } = req.params;
+      const diagnostics = typeof getEquipmentDiagnostics === 'function' 
+        ? getEquipmentDiagnostics() 
+        : (continuousMlMonitor ? continuousMlMonitor.getEquipmentDiagnostics() : {});
+      
+      const keyMap = {
+        'pump': 'P101',
+        'p101': 'P101',
+        'p-101': 'P101',
+        'heat_exchanger': 'E101',
+        'e101': 'E101',
+        'e-101': 'E101',
+        'reactor': 'R101',
+        'r101': 'R101',
+        'r-101': 'R101',
+        'distillation': 'D101',
+        'd101': 'D101',
+        'd-101': 'D101'
+      };
+
+      const normalizedKey = keyMap[id.toLowerCase()] || id;
+      const item = diagnostics[normalizedKey] || diagnostics[id];
+
+      if (!item) {
+        return res.status(404).json({ error: `Equipment '${id}' diagnostics not found` });
+      }
+
+      res.json({
+        success: true,
+        equipmentId: id,
+        diagnostics: item
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 0c. Continuous Process Health & Early Fault Endpoint
   router.get('/process/health', (req, res) => {
     try {
       const assessment = typeof getLatestEarlyFaultAssessment === 'function' ? getLatestEarlyFaultAssessment() : null;
+      const diagnostics = typeof getEquipmentDiagnostics === 'function' 
+        ? getEquipmentDiagnostics() 
+        : (continuousMlMonitor ? continuousMlMonitor.getEquipmentDiagnostics() : {});
       res.json({
         success: true,
         timestamp: new Date().toISOString(),
         process_health: assessment?.process_health || { score: 95, stage: 'NORMAL', label: 'HEALTHY' },
         equipment_health: assessment?.equipment_health || {},
+        equipment_diagnostics: diagnostics,
         early_warnings: assessment?.early_warnings || [],
         what_changed: assessment?.what_changed || [],
         watch_list: assessment?.watch_list || [],
@@ -134,6 +197,9 @@ export function createApiRouter({
     const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
     const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
     const simState = simulator.getState();
+    const diagnostics = typeof getEquipmentDiagnostics === 'function' 
+      ? getEquipmentDiagnostics() 
+      : (continuousMlMonitor ? continuousMlMonitor.getEquipmentDiagnostics() : {});
 
     const equipmentList = [
       {
@@ -141,7 +207,8 @@ export function createApiRouter({
         name: 'Pump (6V Mini Centrifugal)',
         source: useRealPump ? 'real' : 'demo',
         status: simState.pump.status,
-        health: simState.pump.health,
+        health: diagnostics.P101?.health ?? simState.pump.health,
+        diagnostics: diagnostics.P101 || diagnostics.pump,
         data: useRealPump ? {
           rpm: hardwareState.rpm,
           vibration: hardwareState.vibration,
@@ -155,7 +222,8 @@ export function createApiRouter({
         name: 'Heat Exchanger (Shell & Tube)',
         source: useRealExchanger ? 'real' : 'demo',
         status: simState.heatExchanger.status,
-        health: simState.heatExchanger.health,
+        health: diagnostics.E101?.health ?? simState.heatExchanger.health,
+        diagnostics: diagnostics.E101 || diagnostics.heat_exchanger,
         data: useRealExchanger ? {
           inlet_temperature: hardwareState.inlet_temperature,
           outlet_temperature: hardwareState.outlet_temperature,
@@ -169,7 +237,8 @@ export function createApiRouter({
         name: 'Continuous Stirred-Tank Reactor (CSTR)',
         source: 'simulated',
         status: simState.reactor.status,
-        health: simState.reactor.health,
+        health: diagnostics.R101?.health ?? simState.reactor.health,
+        diagnostics: diagnostics.R101 || diagnostics.reactor,
         data: {
           ...simState.reactor,
           feed_flow: simState.pump.flow,
@@ -181,7 +250,8 @@ export function createApiRouter({
         name: 'Binary Distillation Column',
         source: 'simulated',
         status: simState.distillation.status,
-        health: simState.distillation.health,
+        health: diagnostics.D101?.health ?? simState.distillation.health,
+        diagnostics: diagnostics.D101 || diagnostics.distillation,
         data: {
           ...simState.distillation,
           feed_flow: simState.pump.flow,
@@ -483,6 +553,43 @@ export function createApiRouter({
     }
   });
 
+  // 7d. Manual Simulator Control Overrides (PFD Dynamic Sliders)
+  router.post('/simulator/control', (req, res) => {
+    try {
+      const overrides = req.body || {};
+      if (typeof simulator.setUserControls === 'function') {
+        simulator.setUserControls(overrides);
+      }
+      res.json({
+        success: true,
+        message: 'Simulator control parameters updated.',
+        controls: simulator.userControls || overrides,
+        state: simulator.getState()
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/simulator/reset', (req, res) => {
+    try {
+      if (typeof simulator.resetUserControls === 'function') {
+        simulator.resetUserControls();
+      }
+      if (typeof simulator.resetSimulation === 'function') {
+        simulator.resetSimulation();
+      }
+      if (setOperatorApprovedState) setOperatorApprovedState(false);
+      res.json({
+        success: true,
+        message: 'Simulator reset to nominal baseline.',
+        state: simulator.getState()
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 7c. Timestamped Process History Trends
   router.get('/process/history', async (req, res) => {
     try {
@@ -728,17 +835,38 @@ export function createApiRouter({
       if (overrides.pump_rpm !== undefined) {
         simulator.executeRemoteCommand({ command: 'SET_RPM', equipment: 'P-101', params: { rpm: overrides.pump_rpm } });
       }
+      if (overrides.suction_restriction !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_SUCTION_RESTRICTION', equipment: 'P-101', params: { suction_restriction: overrides.suction_restriction } });
+      }
+      if (overrides.discharge_restriction !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_DISCHARGE_RESTRICTION', equipment: 'P-101', params: { discharge_restriction: overrides.discharge_restriction } });
+      }
+      if (overrides.pump_condition !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_PUMP_CONDITION', equipment: 'P-101', params: { pump_condition: overrides.pump_condition } });
+      }
       if (overrides.heat_exchanger_efficiency !== undefined) {
         simulator.executeRemoteCommand({ command: 'SET_EFFICIENCY', equipment: 'E-101', params: { efficiency: overrides.heat_exchanger_efficiency } });
+      }
+      if (overrides.fouling_level !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_FOULING', equipment: 'E-101', params: { fouling_level: overrides.fouling_level } });
       }
       if (overrides.cooling_status !== undefined) {
         simulator.executeRemoteCommand({ command: 'SET_COOLING', equipment: 'R-101', params: { cooling_status: overrides.cooling_status } });
       }
+      if (overrides.agitator_speed !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_AGITATOR', equipment: 'R-101', params: { agitator_speed: overrides.agitator_speed } });
+      }
+      if (overrides.reaction_kinetics_mod !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_KINETICS', equipment: 'R-101', params: { reaction_kinetics_mod: overrides.reaction_kinetics_mod } });
+      }
       if (overrides.reflux_ratio !== undefined) {
         simulator.executeRemoteCommand({ command: 'SET_REFLUX', equipment: 'D-101', params: { reflux_ratio: overrides.reflux_ratio } });
       }
-      if (overrides.agitator_speed !== undefined) {
-        simulator.executeRemoteCommand({ command: 'SET_AGITATOR', equipment: 'R-101', params: { agitator_speed: overrides.agitator_speed } });
+      if (overrides.reboiler_duty_mod !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_REBOILER_DUTY', equipment: 'D-101', params: { reboiler_duty_mod: overrides.reboiler_duty_mod } });
+      }
+      if (overrides.column_pressure_setpoint !== undefined) {
+        simulator.executeRemoteCommand({ command: 'SET_COLUMN_PRESSURE', equipment: 'D-101', params: { column_pressure_setpoint: overrides.column_pressure_setpoint } });
       }
       const state = simulator.getState();
       res.json({ status: 'success', message: 'Process simulation controls updated', controls: state.controls, state });

@@ -90,7 +90,7 @@ const diagCooling = diagnoseProcessState({
 });
 console.log('Cooling failure diagnosis:\n', JSON.stringify(diagCooling, null, 2));
 
-if (diagCooling.equipment !== 'Reactor' || diagCooling.severity !== 'HIGH' && diagCooling.severity !== 'CRITICAL') {
+if ((diagCooling.equipment !== 'Reactor' && diagCooling.equipment !== 'R-101') || (diagCooling.severity !== 'HIGH' && diagCooling.severity !== 'CRITICAL')) {
   throw new Error('Diagnosis mismatch for cooling failure');
 }
 
@@ -106,7 +106,7 @@ const diagPump = diagnoseProcessState({
   mlConfidence: 0.88
 });
 console.log('\nPump fault diagnosis:\n', JSON.stringify(diagPump, null, 2));
-if (diagPump.equipment !== 'Pump' || !diagPump.root_cause.includes('bearing wear')) {
+if ((diagPump.equipment !== 'Pump' && diagPump.equipment !== 'P-101') || !diagPump.root_cause.includes('bearing wear')) {
   throw new Error('Diagnosis mismatch for pump fault');
 }
 

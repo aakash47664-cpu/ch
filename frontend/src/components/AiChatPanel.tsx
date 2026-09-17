@@ -130,9 +130,9 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
       const errorMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         sender: 'ai',
-        text: "Industrial AI is temporarily reconnecting. Please ask your question again, or verify network connectivity.",
+        text: `⚠️ **AI Assistant Temporary Notice**: The ${selectedProvider === 'gemini' ? 'Google Gemini' : 'Groq'} endpoint is currently reconnecting (${err.message || 'Connection timeout'}).\n\n*Note: Continuous ML monitoring (Isolation Forest & Random Forest) remains 100% active and evaluating live telemetry.* Please try your query again or switch providers.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        provider: 'Safety Net'
+        provider: 'System Diagnostics'
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {

@@ -1,4 +1,4 @@
-import { AlertItem, Diagnosis, FaultMode, ChatMessage, ChatResponse } from '../types';
+import { AlertItem, Diagnosis, FaultMode, ChatMessage, ChatResponse, ManualControlOverrides } from '../types';
 
 const API_BASE = '/api';
 
@@ -137,13 +137,7 @@ export async function sendAiChatMessage(
   return res.json();
 }
 
-export async function updateSimulatorControls(controls: {
-  pump_rpm?: number;
-  heat_exchanger_efficiency?: number;
-  cooling_status?: number;
-  reflux_ratio?: number;
-  agitator_speed?: number;
-}) {
+export async function updateSimulatorControls(controls: ManualControlOverrides) {
   const res = await fetch(`${API_BASE}/simulator/control`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -362,5 +356,26 @@ export async function resetWorkflow(operator: string = 'Plant Operator') {
   if (!res.ok) throw new Error('Failed to reset process workflow');
   return res.json();
 }
+
+export async function resetSimulation() {
+  const res = await fetch(`${API_BASE}/simulator/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  });
+  if (!res.ok) throw new Error('Failed to reset simulation');
+  return res.json();
+}
+
+export async function setSimulatorScenario(fault: string) {
+  const res = await fetch(`${API_BASE}/demo/fault`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fault })
+  });
+  if (!res.ok) throw new Error('Failed to set simulation scenario');
+  return res.json();
+}
+
+
 
 

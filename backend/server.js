@@ -18,6 +18,7 @@ import { RandomForestClassifier } from './ai/randomForest.js';
 import { diagnoseProcessState } from './ai/rootCauseEngine.js';
 import { ProcessSimulator } from './simulator/processSimulator.js';
 import { EarlyFaultEngine } from './engineering/earlyFaultEngine.js';
+import { ContinuousMlMonitor } from './ai/continuousMlMonitor.js';
 import { createApiRouter } from './routes/api.js';
 
 dotenv.config();
@@ -66,10 +67,11 @@ const randomForest = new RandomForestClassifier(25, 8, 4);
 randomForest.fit(syntheticData, FEATURE_NAMES, CLASSES);
 
 // ----------------------------------------------------
-// 3. Process Simulator & Early Fault Engine
+// 3. Process Simulator, Early Fault Engine & Continuous ML Monitor
 // ----------------------------------------------------
 const simulator = new ProcessSimulator();
 const earlyFaultEngine = new EarlyFaultEngine();
+const continuousMlMonitor = new ContinuousMlMonitor();
 
 // Initial baseline telemetry for early fault engine
 let latestEarlyFaultAssessment = earlyFaultEngine.processTelemetry({
@@ -96,6 +98,9 @@ let latestEarlyFaultAssessment = earlyFaultEngine.processTelemetry({
   dist_pressure: 2.10,
   dist_feed_flow: 9.7
 }, 'normal');
+
+// Initialize continuous ML diagnostics
+continuousMlMonitor.getInitialDiagnostics();
 
 // Latest explainable diagnosis cache
 let latestDiagnosis = {
@@ -130,6 +135,10 @@ function getLatestEarlyFaultAssessment() {
   return latestEarlyFaultAssessment;
 }
 
+function getEquipmentDiagnostics() {
+  return continuousMlMonitor.getEquipmentDiagnostics();
+}
+
 // ----------------------------------------------------
 // 4. API Routes
 // ----------------------------------------------------
@@ -141,6 +150,8 @@ app.use('/api', createApiRouter({
   getLatestDiagnosis,
   updateLatestDiagnosis,
   getLatestEarlyFaultAssessment,
+  getEquipmentDiagnostics,
+  continuousMlMonitor,
   setOperatorApprovedState
 }));
 
@@ -290,6 +301,9 @@ function buildBroadcastPayload() {
     alert_summary: simState.alert_summary || simulator.getAlertSummary(),
     alarms: simState.active_alerts || [], // alias for backward compatibility
     diagnosis: latestDiagnosis,
+    // CONTINUOUS PLANT-WIDE EQUIPMENT ML MONITOR STATE (SINGLE SOURCE OF TRUTH)
+    equipment_diagnostics: continuousMlMonitor.getEquipmentDiagnostics(),
+    equipmentDiagnostics: continuousMlMonitor.getEquipmentDiagnostics(),
     // CONTINUOUS PROCESS HEALTH & EARLY FAULT DETECTION DATA
     process_health: latestEarlyFaultAssessment.process_health,
     equipment_health: latestEarlyFaultAssessment.equipment_health,
@@ -372,6 +386,9 @@ setInterval(async () => {
       distillation_level: simState.distillation.level,
       distillation_reflux_ratio: simState.distillation.reflux_ratio
     };
+
+    // 2a. Execute Continuous Plant-Wide Equipment ML Diagnostics (All 4 Units Simultaneously)
+    continuousMlMonitor.processState(simState, telemetryVector, activeFault, hardwareState);
 
     // 2b. Compute Continuous Early-Fault & Process Health Assessment
     latestEarlyFaultAssessment = earlyFaultEngine.processTelemetry(telemetryVector, activeFault);

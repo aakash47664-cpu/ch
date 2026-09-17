@@ -11,37 +11,29 @@ import { fetchAlerts, setDemoFault } from './services/api';
 
 import { Navbar } from './components/Navbar';
 import { DemoModeBar } from './components/DemoModeBar';
-import { ProcessFlowsheet } from './components/ProcessFlowsheet';
-import { AiDiagnosisPanel } from './components/AiDiagnosisPanel';
-import { EquipmentCardsGrid } from './components/EquipmentCard';
-import { LiveCharts } from './components/LiveCharts';
-import { AlertsPanel } from './components/AlertsPanel';
-import { ActiveAlertsCard } from './components/ActiveAlertsCard';
-import { ProcessHealthHeader } from './components/ProcessHealthHeader';
-import { EquipmentHealthGrid } from './components/EquipmentHealthGrid';
-import { EarlyWarningsSection } from './components/EarlyWarningsSection';
-import { WatchListAndChanges } from './components/WatchListAndChanges';
-import { EarlyWarningTimeline } from './components/EarlyWarningTimeline';
 import { EquipmentDetailDrawer } from './components/EquipmentDetailDrawer';
-import { EarlyFaultMonitoringCockpit } from './components/EarlyFaultMonitoringCockpit';
-import { ProcessWorkflowSection } from './components/ProcessWorkflowSection';
+
+// 8 Dedicated Application Workspaces
+import { OverviewWorkspace } from './components/workspaces/OverviewWorkspace';
+import { ProcessFlowsheetWorkspace } from './components/workspaces/ProcessFlowsheetWorkspace';
+import { PumpWorkspace } from './components/workspaces/PumpWorkspace';
+import { HeatExchangerWorkspace } from './components/workspaces/HeatExchangerWorkspace';
+import { ReactorWorkspace } from './components/workspaces/ReactorWorkspace';
+import { DistillationWorkspace } from './components/workspaces/DistillationWorkspace';
+import { AiWorkspace } from './components/workspaces/AiWorkspace';
+import { AlertsWorkspace } from './components/workspaces/AlertsWorkspace';
 
 import {
   LayoutDashboard,
   Activity,
   Flame,
-  Atom,
   Cpu,
   Layers,
   BrainCircuit,
   Bell,
-  CheckCircle2,
-  AlertTriangle,
-  MessageSquare,
+  Atom,
   Network
 } from 'lucide-react';
-
-
 
 const INITIAL_STATE: ProcessUpdatePayload = {
   type: 'PROCESS_UPDATE',
@@ -148,7 +140,7 @@ export const App: React.FC = () => {
       });
   }, []);
 
-  // WebSocket Live Stream Subscription
+  // WebSocket Live Stream Subscription (Unified Central Process Simulation State)
   useEffect(() => {
     const unsubscribe = wsClient.subscribe((payload) => {
       setState(payload);
@@ -212,29 +204,7 @@ export const App: React.FC = () => {
   const handleAskAiAboutEquipment = (equipId: string) => {
     setSelectedEquipment(equipId);
     setChatEquipment(equipId);
-    if (activeTab !== 'overview' && activeTab !== 'ai_diagnosis') {
-      setActiveTab('overview');
-    }
-  };
-
-  const handleAnalyzeAlertWithAi = (alert: IntelligentAlert) => {
-    const equipLower = alert.equipment.toLowerCase();
-    let equipId = 'pump';
-    if (equipLower.includes('p-101') || equipLower.includes('pump')) equipId = 'pump';
-    else if (equipLower.includes('e-101') || equipLower.includes('exchanger')) equipId = 'heat_exchanger';
-    else if (equipLower.includes('r-101') || equipLower.includes('reactor')) equipId = 'reactor';
-    else if (equipLower.includes('d-101') || equipLower.includes('distill') || equipLower.includes('column')) equipId = 'distillation';
-
-    setSelectedEquipment(equipId);
-    setChatEquipment(equipId);
-    setActiveTab('overview');
-
-    setTimeout(() => {
-      const el = document.querySelector('.ai-diagnosis-panel');
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    }, 100);
+    setActiveTab('ai_diagnosis');
   };
 
   // Evaluate equipment health for sidebar dots
@@ -249,7 +219,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="app-container">
-      {/* SIDEBAR NAVIGATION */}
+      {/* SIDEBAR NAVIGATION (DRIVES TRUE SEPARATE-PAGE WORKSPACES) */}
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="brand-badge">
@@ -405,422 +375,106 @@ export const App: React.FC = () => {
             isLoading={isInjectingFault}
           />
 
-          {/* TAB 1: OVERVIEW */}
+          {/* ========================================================================= */}
+          {/* STRICT SEPARATE-PAGE WORKSPACES: ONLY ONE PAGE IS MOUNTED AT A TIME       */}
+          {/* ========================================================================= */}
+
+          {/* PAGE 1: OVERVIEW */}
           {activeTab === 'overview' && (
-            <div className="tab-content-anim space-y-4">
-              {/* 0. ADJUSTABLE CAUSAL PROCESS WORKFLOW */}
-              <ProcessWorkflowSection
-                state={state}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={(id) => setSelectedEquipment(id)}
-                onAskAiAboutEquipment={handleAskAiAboutEquipment}
-              />
-
-              {/* 1. COMPACT & INTERACTIVE EARLY FAULT MONITORING COCKPIT */}
-              <EarlyFaultMonitoringCockpit
+            <div className="tab-content-anim">
+              <OverviewWorkspace
                 state={state}
                 timeSeries={timeSeries}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={(id) => setSelectedEquipment(id)}
-                onAskAiAboutEquipment={handleAskAiAboutEquipment}
-              />
-
-              {/* 2. ASPEN PFD WITH CONTINUOUS CAUSAL STREAM PROPAGATION */}
-              <ProcessFlowsheet
-                state={state}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={(id) => setSelectedEquipment(id)}
-                onAskAiAbout={handleAskAiAboutEquipment}
-                timeSeries={timeSeries}
-                onSelectFault={handleSelectFault}
-              />
-
-              {/* 3. CORE NOVELTY: AI DIAGNOSIS, XAI, PROGNOSIS, PREVENTIVE RISK & SAFETY GATE PANEL */}
-              <AiDiagnosisPanel
-                diagnosis={state.diagnosis}
-                equipment={state.equipment}
-                initialChatEquipment={chatEquipment}
-              />
-
-              {/* 4. 4 MAIN EQUIPMENT SENSOR DETAIL CARDS */}
-              <EquipmentCardsGrid
-                pump={state.equipment.pump}
-                heatExchanger={state.equipment.heat_exchanger}
-                reactor={state.equipment.reactor}
-                distillation={state.equipment.distillation}
-                history={timeSeries}
+                alerts={alerts}
+                onNavigateTab={setActiveTab}
                 onAskAiAbout={handleAskAiAboutEquipment}
               />
-
-              {/* 5. LIVE TIME-SERIES CHARTS WITH RISK PROGRESSION TIMELINE */}
-              <LiveCharts
-                data={timeSeries}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={setSelectedEquipment}
-              />
-
-              {/* 6. ACTIVE INTELLIGENT ALERTS & AUDIT LOG */}
-              <ActiveAlertsCard
-                alerts={state.active_alerts || []}
-                alertSummary={state.alert_summary}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={(id) => setSelectedEquipment(id)}
-                onAnalyzeWithAi={handleAnalyzeAlertWithAi}
-                onAlertsUpdated={() => {
-                  fetchAlerts().then((data) => setAlerts(data)).catch(() => setAlerts([]));
-                }}
-              />
-
-              <AlertsPanel alerts={alerts} />
             </div>
           )}
 
-          {/* TAB 2: FLOWSHEET DEDICATED VIEW */}
+          {/* PAGE 2: PROCESS FLOWSHEET */}
           {activeTab === 'flowsheet' && (
-            <div className="tab-content-anim space-y-4">
-              <ProcessWorkflowSection
+            <div className="tab-content-anim">
+              <ProcessFlowsheetWorkspace
                 state={state}
+                timeSeries={timeSeries}
                 selectedEquipment={selectedEquipment}
                 onSelectEquipment={(id) => setSelectedEquipment(id)}
-                onAskAiAboutEquipment={handleAskAiAboutEquipment}
-              />
-              <ActiveAlertsCard
-                alerts={state.active_alerts || []}
-                alertSummary={state.alert_summary}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={setSelectedEquipment}
-                onAnalyzeWithAi={handleAnalyzeAlertWithAi}
-                onAlertsUpdated={() => {
-                  fetchAlerts().then((data) => setAlerts(data)).catch(() => setAlerts([]));
-                }}
-              />
-              <ProcessFlowsheet
-                state={state}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={setSelectedEquipment}
                 onAskAiAbout={handleAskAiAboutEquipment}
-                timeSeries={timeSeries}
                 onSelectFault={handleSelectFault}
               />
-              <LiveCharts
-                data={timeSeries}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={setSelectedEquipment}
-              />
             </div>
           )}
 
-          {/* TAB: ACTIVE ALERTS DEDICATED VIEW */}
-          {activeTab === 'alerts' && (
-            <div className="tab-content-anim space-y-4">
-              <ActiveAlertsCard
-                alerts={state.active_alerts || []}
-                alertSummary={state.alert_summary}
-                selectedEquipment={selectedEquipment}
-                onSelectEquipment={setSelectedEquipment}
-                onAnalyzeWithAi={handleAnalyzeAlertWithAi}
-                onAlertsUpdated={() => {
-                  fetchAlerts().then((data) => setAlerts(data)).catch(() => setAlerts([]));
-                }}
-              />
-              <AlertsPanel alerts={alerts} />
-            </div>
-          )}
-
-
-          {/* TAB 3: PUMP DETAIL */}
+          {/* PAGE 3: PUMP P-101 */}
           {activeTab === 'pump' && (
             <div className="tab-content-anim">
-              <div className="equipment-card">
-                <div className="equipment-card-header">
-                  <div className="unit-title-group">
-                    <div className="unit-icon-badge">
-                      <Activity size={16} />
-                    </div>
-                    <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>PUMP DETAIL — CENTRIFUGAL UNIT P-101</h2>
-                      <p className="unit-id">
-                        Hardware Interface / Digital Twin Continuous Model (Sensors: Speed, MPU6050 Acceleration, Dual DS18B20 Probes)
-                      </p>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span className={`source-badge ${state.equipment.pump.source === 'real' ? 'real' : 'demo'}`}>
-                      {state.equipment.pump.source === 'real' ? 'REAL DATA' : 'DEMO DATA'}
-                    </span>
-                    <button
-                      className="card-ask-ai-btn"
-                      onClick={() => handleAskAiAboutEquipment('pump')}
-                    >
-                      <MessageSquare size={11} />
-                      <span>Ask Industrial AI</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
-                  <div className="metric-row">
-                    <span className="metric-label">Rotational Speed (IR Optical Sensor)</span>
-                    <span className="metric-value numeric-data">{Math.round(state.equipment.pump.data.rpm)} RPM</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Casing Vibration Magnitude (MPU6050 Accelerometer)</span>
-                    <span className="metric-value numeric-data" style={{ color: pumpIsFault ? 'var(--sev-critical-text)' : 'inherit' }}>
-                      {state.equipment.pump.data.vibration.toFixed(2)} g
-                    </span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Calculated Discharge Flow</span>
-                    <span className="metric-value numeric-data">{(state.equipment.pump.data.flow ?? 10.0).toFixed(1)} L/min</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Inlet Fluid Temperature</span>
-                    <span className="metric-value numeric-data">{state.equipment.pump.data.inlet_temperature.toFixed(1)} °C</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Discharge Fluid Temperature</span>
-                    <span className="metric-value numeric-data">{state.equipment.pump.data.outlet_temperature.toFixed(1)} °C</span>
-                  </div>
-                </div>
-
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
-                  <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Operating Limits & Vibration Boundaries
-                  </h4>
-                  <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Normal: 2300–2600 RPM, &lt;0.20 g vibration, 8–11 L/min flow. Early warning: 0.20–0.30 g vibration. Developing: 0.30–0.40 g. High risk: 0.40–0.50 g. Critical: &gt;0.50 g.
-                  </p>
-                </div>
-              </div>
-
-              <LiveCharts
-                data={timeSeries}
-                selectedEquipment="pump"
-                onSelectEquipment={setSelectedEquipment}
+              <PumpWorkspace
+                state={state}
+                timeSeries={timeSeries}
+                onNavigateTab={setActiveTab}
+                onAskAiAbout={handleAskAiAboutEquipment}
               />
             </div>
           )}
 
-          {/* TAB 4: HEAT EXCHANGER DETAIL */}
+          {/* PAGE 4: HEAT EXCHANGER E-101 */}
           {activeTab === 'heat_exchanger' && (
             <div className="tab-content-anim">
-              <div className="equipment-card">
-                <div className="equipment-card-header">
-                  <div className="unit-title-group">
-                    <div className="unit-icon-badge" style={{ color: '#D97706' }}>
-                      <Flame size={16} />
-                    </div>
-                    <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>HEAT EXCHANGER DETAIL — COUNTER-FLOW UNIT E-101</h2>
-                      <p className="unit-id">
-                        Thermal transfer gradient monitored via dual DS18B20 digital temperature sensors
-                      </p>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span className={`source-badge ${state.equipment.heat_exchanger.source === 'real' ? 'real' : 'demo'}`}>
-                      {state.equipment.heat_exchanger.source === 'real' ? 'REAL DATA' : 'DEMO DATA'}
-                    </span>
-                    <button
-                      className="card-ask-ai-btn"
-                      onClick={() => handleAskAiAboutEquipment('heat_exchanger')}
-                    >
-                      <MessageSquare size={11} />
-                      <span>Ask Industrial AI</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
-                  <div className="metric-row">
-                    <span className="metric-label">Process Stream Inlet Temperature</span>
-                    <span className="metric-value numeric-data">{state.equipment.heat_exchanger.data.inlet_temperature.toFixed(1)} °C</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Process Stream Outlet Temperature</span>
-                    <span className="metric-value numeric-data">{state.equipment.heat_exchanger.data.outlet_temperature.toFixed(1)} °C</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Thermal Difference (ΔT Gradient)</span>
-                    <span className="metric-value numeric-data" style={{ color: hxIsFault ? 'var(--sev-critical-text)' : 'var(--sev-normal-text)' }}>
-                      {state.equipment.heat_exchanger.data.temperature_difference.toFixed(1)} °C
-                    </span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Heat Transfer Overall Efficiency</span>
-                    <span className="metric-value numeric-data">{(state.equipment.heat_exchanger.data.efficiency ?? state.equipment.heat_exchanger.data.heat_transfer_indicator).toFixed(1)} %</span>
-                  </div>
-                </div>
-
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
-                  <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Thermal Fouling Factor & Progressive Limits
-                  </h4>
-                  <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Normal: ΔT ≈ 6–10°C (Eff &gt;75%). Early fouling: ΔT = 4–6°C (Eff 60–75%). Developing: ΔT = 3–4°C (Eff 50–60%). High risk: ΔT = 2–3°C (Eff 40–50%). Critical: ΔT &lt; 2°C (Eff &lt;40%).
-                  </p>
-                </div>
-              </div>
-
-              <LiveCharts
-                data={timeSeries}
-                selectedEquipment="heat_exchanger"
-                onSelectEquipment={setSelectedEquipment}
+              <HeatExchangerWorkspace
+                state={state}
+                timeSeries={timeSeries}
+                onNavigateTab={setActiveTab}
+                onAskAiAbout={handleAskAiAboutEquipment}
               />
             </div>
           )}
 
-          {/* TAB 5: REACTOR DETAIL */}
+          {/* PAGE 5: REACTOR R-101 CSTR */}
           {activeTab === 'reactor' && (
             <div className="tab-content-anim">
-              <div className="equipment-card">
-                <div className="equipment-card-header">
-                  <div className="unit-title-group">
-                    <div className="unit-icon-badge" style={{ color: '#7C3AED' }}>
-                      <Cpu size={16} />
-                    </div>
-                    <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>REACTOR DETAIL — CONTINUOUS CSTR R-101</h2>
-                      <p className="unit-id">
-                        Coupled exothermic Arrhenius kinetics, vapor pressure accumulation, and jacket heat dissipation
-                      </p>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span className="source-badge simulated">SIMULATED DATA</span>
-                    <button
-                      className="card-ask-ai-btn"
-                      onClick={() => handleAskAiAboutEquipment('reactor')}
-                    >
-                      <MessageSquare size={11} />
-                      <span>Ask Industrial AI</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
-                  <div className="metric-row">
-                    <span className="metric-label">Reaction Core Temperature</span>
-                    <span className="metric-value numeric-data" style={{ color: state.equipment.reactor.data.temperature > 80 ? 'var(--sev-critical-text)' : 'inherit' }}>
-                      {state.equipment.reactor.data.temperature.toFixed(1)} °C
-                    </span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Internal Vessel Pressure</span>
-                    <span className="metric-value numeric-data" style={{ color: state.equipment.reactor.data.pressure > 2.8 ? 'var(--sev-critical-text)' : 'inherit' }}>
-                      {state.equipment.reactor.data.pressure.toFixed(2)} bar
-                    </span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Vessel Holdup Level</span>
-                    <span className="metric-value numeric-data">{state.equipment.reactor.data.level.toFixed(1)} %</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Agitator Shaft Speed</span>
-                    <span className="metric-value numeric-data">{Math.round(state.equipment.reactor.data.agitator_speed)} RPM</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Cooling Jacket Relay Interlock</span>
-                    <span className="metric-value numeric-data" style={{ color: state.equipment.reactor.data.cooling_status === 1 ? 'var(--sev-normal-text)' : 'var(--sev-critical-text)' }}>
-                      {state.equipment.reactor.data.cooling_status === 1 ? 'ACTIVE (1)' : 'TRIPPED (0 - Loss of Cooling)'}
-                    </span>
-                  </div>
-                </div>
-
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
-                  <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Exothermic Kinetics & Progressive Limits
-                  </h4>
-                  <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Normal: 60–75°C, 1.8–2.3 bar, Level 50–80%, Agitator 250–350 RPM. Progressive degradation: 65°C → 70°C → 76°C → 82°C → 88°C → 92°C. Pressure escalates according to Antoine vapor-liquid equilibria.
-                  </p>
-                </div>
-              </div>
-
-              <LiveCharts
-                data={timeSeries}
-                selectedEquipment="reactor"
-                onSelectEquipment={setSelectedEquipment}
+              <ReactorWorkspace
+                state={state}
+                timeSeries={timeSeries}
+                onNavigateTab={setActiveTab}
+                onAskAiAbout={handleAskAiAboutEquipment}
               />
             </div>
           )}
 
-          {/* TAB 6: DISTILLATION DETAIL */}
+          {/* PAGE 6: DISTILLATION D-101 */}
           {activeTab === 'distillation' && (
             <div className="tab-content-anim">
-              <div className="equipment-card">
-                <div className="equipment-card-header">
-                  <div className="unit-title-group">
-                    <div className="unit-icon-badge" style={{ color: '#0891B2' }}>
-                      <Layers size={16} />
-                    </div>
-                    <div>
-                      <h2 className="unit-name" style={{ fontSize: '1.05rem' }}>DISTILLATION COLUMN — BINARY FRACTIONATOR D-101</h2>
-                      <p className="unit-id">
-                        Tray vapor-liquid equilibria, reflux ratio dynamics, and overhead distillate separation
-                      </p>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span className="source-badge simulated">SIMULATED DATA</span>
-                    <button
-                      className="card-ask-ai-btn"
-                      onClick={() => handleAskAiAboutEquipment('distillation')}
-                    >
-                      <MessageSquare size={11} />
-                      <span>Ask Industrial AI</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="unit-metrics-list" style={{ marginTop: '6px' }}>
-                  <div className="metric-row">
-                    <span className="metric-label">Reflux Ratio (L/D)</span>
-                    <span className="metric-value numeric-data" style={{ color: distIsWarning ? 'var(--sev-medium-text)' : 'var(--sev-normal-text)' }}>
-                      {state.equipment.distillation.data.reflux_ratio.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Top Overhead Vapor Temperature</span>
-                    <span className="metric-value numeric-data" style={{ color: state.equipment.distillation.data.top_temperature > 80 ? 'var(--sev-critical-text)' : 'inherit' }}>
-                      {state.equipment.distillation.data.top_temperature.toFixed(1)} °C
-                    </span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Bottom Reboiler Temperature</span>
-                    <span className="metric-value numeric-data">{state.equipment.distillation.data.bottom_temperature.toFixed(1)} °C</span>
-                  </div>
-                  <div className="metric-row">
-                    <span className="metric-label">Column Operating Pressure</span>
-                    <span className="metric-value numeric-data">{state.equipment.distillation.data.pressure.toFixed(2)} bar</span>
-                  </div>
-                </div>
-
-                <div style={{ padding: '10px 14px', background: 'var(--bg-card-subtle)', borderRadius: '6px', border: '1px solid var(--border-color)', marginTop: '6px' }}>
-                  <h4 style={{ fontSize: '0.78rem', color: 'var(--primary-blue)', marginBottom: '3px', fontWeight: 700 }}>
-                    Reflux Ratio Decay & Progressive Limits
-                  </h4>
-                  <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                    Normal: Reflux 1.5–2.2, Top Temp 74–80°C, Bottom Temp 105–120°C, Pressure 1.8–2.3 bar. Progressive reflux degradation: 1.84 → 1.50 → 1.20 → 0.90 → 0.65.
-                  </p>
-                </div>
-              </div>
-
-              <LiveCharts
-                data={timeSeries}
-                selectedEquipment="distillation"
-                onSelectEquipment={setSelectedEquipment}
+              <DistillationWorkspace
+                state={state}
+                timeSeries={timeSeries}
+                onNavigateTab={setActiveTab}
+                onAskAiAbout={handleAskAiAboutEquipment}
               />
             </div>
           )}
 
-          {/* TAB 7: AI DECISION & GROUNDED COPILOT */}
+          {/* PAGE 7: INDUSTRIAL AI & DECISION */}
           {activeTab === 'ai_diagnosis' && (
             <div className="tab-content-anim">
-              <AiDiagnosisPanel
-                diagnosis={state.diagnosis}
-                equipment={state.equipment}
-                initialChatEquipment={chatEquipment}
+              <AiWorkspace
+                state={state}
+                selectedEquipment={selectedEquipment}
+              />
+            </div>
+          )}
+
+          {/* PAGE 8: ACTIVE ALERTS */}
+          {activeTab === 'alerts' && (
+            <div className="tab-content-anim">
+              <AlertsWorkspace
+                state={state}
+                alerts={alerts}
+                onNavigateTab={setActiveTab}
+                onAlertsUpdated={() => {
+                  fetchAlerts().then((data) => setAlerts(data)).catch(() => setAlerts([]));
+                }}
+                onAskAiAbout={handleAskAiAboutEquipment}
               />
             </div>
           )}

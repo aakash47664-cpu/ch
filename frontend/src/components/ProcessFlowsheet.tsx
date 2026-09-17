@@ -1,1573 +1,1556 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
+  TelemetryData,
+  ProcessStream,
+  ManualControlOverrides,
   ProcessUpdatePayload,
-  TimeSeriesPoint,
-  FaultMode
+  TimeSeriesPoint
 } from '../types';
 import {
-  updateSimulatorControls,
-  resetSimulatorControls,
-  resetWorkflow,
-  setDemoFault
+  updateSimulatorControls as apiUpdateControls,
+  resetSimulation as apiResetSimulation,
+  setSimulatorScenario as apiSetScenario
 } from '../services/api';
 import {
-  RotateCcw,
-  ArrowRight,
-  Radio,
-  MessageSquare,
-  Sparkles,
+  Layers,
+  Activity,
   Sliders,
+  RotateCcw,
+  MessageSquare,
+  Droplet,
+  ArrowRight,
+  Info,
   AlertTriangle,
   CheckCircle2,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  Activity,
-  Flame,
-  Cpu,
-  Layers,
-  Droplets,
-  Zap,
-  Info
+  GitCommit,
+  Gauge
 } from 'lucide-react';
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip as ChartTooltip
-} from 'recharts';
 
 interface ProcessFlowsheetProps {
-  state: ProcessUpdatePayload;
+  telemetry?: TelemetryData | null;
+  state?: ProcessUpdatePayload | null;
   selectedEquipment?: string;
-  onSelectEquipment?: (id: string) => void;
-  onAskAiAbout?: (id: string) => void;
+  onSelectEquipment?: (unitId: string) => void;
+  onSelectUnit?: (unitId: string) => void;
+  onAskAiAbout?: (unitId: string) => void;
+  onApplyPreset?: (scenario: string) => void;
+  onSelectFault?: (fault: any) => void;
+  onUpdateSimulatorControls?: (overrides: ManualControlOverrides) => Promise<void>;
+  onResetSimulation?: () => Promise<void>;
+  isLoadingPreset?: boolean;
   timeSeries?: TimeSeriesPoint[];
-  onSelectFault?: (fault: FaultMode) => void;
 }
 
 export const ProcessFlowsheet: React.FC<ProcessFlowsheetProps> = ({
+  telemetry: directTelemetry,
   state,
-  selectedEquipment = 'pump',
+  selectedEquipment,
   onSelectEquipment,
+  onSelectUnit,
   onAskAiAbout,
-  timeSeries = [],
-  onSelectFault
+  onApplyPreset,
+  onSelectFault,
+  onUpdateSimulatorControls,
+  onResetSimulation,
+  isLoadingPreset = false
 }) => {
-  const [isUpdating, setIsUpdating] = useState<boolean>(false);
-  const [feedbackMsg, setFeedbackMsg] = useState<{
-    title: string;
-    text: string;
-    warn?: boolean;
-  } | null>(null);
+  // Normalize equipment ID mapping (e.g. 'pump' <-> 'P-101')
+  const mapPropToUnitId = (id?: string) => {
+    if (!id) return 'P-101';
+    if (id === 'pump') return 'P-101';
+    if (id === 'heat_exchanger') return 'E-101';
+    if (id === 'reactor') return 'R-101';
+    if (id === 'distillation') return 'D-101';
+    return id;
+  };
 
-  // Local simulation control states
-  const [pumpRpm, setPumpRpm] = useState<number>(state.equipment?.pump?.data?.rpm || 2450);
-  const [hxEffic, setHxEffic] = useState<number>(state.equipment?.heat_exchanger?.data?.efficiency || 95.0);
-  const [coolingStatus, setCoolingStatus] = useState<number>(state.equipment?.reactor?.data?.cooling_status ?? 1);
-  const [agitatorSpeed, setAgitatorSpeed] = useState<number>(state.equipment?.reactor?.data?.agitator_speed || 350);
-  const [refluxRatio, setRefluxRatio] = useState<number>(state.equipment?.distillation?.data?.reflux_ratio || 1.85);
+  const [selectedUnit, setSelectedUnit] = useState<string | null>(mapPropToUnitId(selectedEquipment));
+  const [selectedStream, setSelectedStream] = useState<ProcessStream | null>(null);
+  const [isUpdatingControls, setIsUpdatingControls] = useState(false);
+  const [activeTab, setActiveTab] = useState<'equipment' | 'streams' | 'controls'>('equipment');
 
-  // Sync sliders from backend unless updating
-  useEffect(() => {
-    if (!isUpdating) {
-      if (state.equipment?.pump?.data?.rpm) setPumpRpm(Math.round(state.equipment.pump.data.rpm));
-      if (state.equipment?.heat_exchanger?.data?.efficiency) setHxEffic(Math.round(state.equipment.heat_exchanger.data.efficiency));
-      if (state.equipment?.reactor?.data?.cooling_status !== undefined) setCoolingStatus(state.equipment.reactor.data.cooling_status);
-      if (state.equipment?.reactor?.data?.agitator_speed) setAgitatorSpeed(Math.round(state.equipment.reactor.data.agitator_speed));
-      if (state.equipment?.distillation?.data?.reflux_ratio) setRefluxRatio(Number(state.equipment.distillation.data.reflux_ratio.toFixed(2)));
+  // Local state for simulation control sliders
+  const [localControls, setLocalControls] = useState<ManualControlOverrides>({});
+
+  // Synchronize with external selectedEquipment prop
+  React.useEffect(() => {
+    if (selectedEquipment) {
+      setSelectedUnit(mapPropToUnitId(selectedEquipment));
     }
-  }, [state.equipment, isUpdating]);
+  }, [selectedEquipment]);
 
-  // Extract equipment data safely
-  const pump = state.equipment.pump.data;
-  const hx = state.equipment.heat_exchanger.data;
-  const reactor = state.equipment.reactor.data;
-  const dist = state.equipment.distillation.data;
-
-  // Real-time flow from pump or default
-  const pumpFlow = pump.flow ?? Number(((pump.rpm / 2450) * 10.0).toFixed(1));
-
-  // Default fallback streams if not yet received from backend
-  const streams = state.streams || {
-    stream_1: { id: '01', name: 'Raw Water Source Feed', from: 'Feed Tank', to: 'P-101', flow: pumpFlow, temperature: 25.0, pressure: 1.01 },
-    stream_2: { id: '02', name: 'Pump Discharge Train', from: 'P-101', to: 'E-101', flow: Number((pumpFlow * 0.99).toFixed(1)), temperature: pump.outlet_temperature || 25.2, pressure: pump.pressure ?? 2.80 },
-    stream_3: { id: '03', name: 'Exchanger Effluent', from: 'E-101', to: 'R-101', flow: Number((pumpFlow * 0.98).toFixed(1)), temperature: hx.outlet_temperature || 38.1, pressure: 2.45 },
-    stream_4: { id: '04', name: 'Reactor Effluent', from: 'R-101', to: 'D-101', flow: Number((pumpFlow * 0.97).toFixed(1)), temperature: reactor.temperature || 65.0, pressure: reactor.pressure || 2.05 },
-    stream_5: { id: '05', name: 'Top Distillate Product', from: 'D-101', to: 'Top Product Receiver', flow: Number((pumpFlow * 0.45).toFixed(1)), temperature: dist.top_temperature || 76.5, pressure: dist.pressure || 2.10, reflux_ratio: dist.reflux_ratio || 1.85, reflux_flow: Number((pumpFlow * 0.45 * (dist.reflux_ratio || 1.85)).toFixed(1)) },
-    stream_6: { id: '06', name: 'Bottoms Product', from: 'D-101', to: 'Bottom Storage Tank', flow: Number((pumpFlow * 0.53).toFixed(1)), temperature: dist.bottom_temperature || 98.4, pressure: Number(((dist.pressure || 2.10) + 0.15).toFixed(2)) }
+  // Construct active telemetry object
+  const telemetry: TelemetryData = directTelemetry || {
+    active_scenario: state?.active_fault_mode || 'normal',
+    timestamp: state?.timestamp || new Date().toISOString(),
+    overall_health: {
+      health_index: (state?.diagnosis?.preventive?.riskScore !== undefined) ? (100 - state.diagnosis.preventive.riskScore) : 98.5,
+      overall_status: (state?.diagnosis?.severity === 'CRITICAL' ? 'critical' : (state?.diagnosis?.severity === 'HIGH' || state?.diagnosis?.severity === 'MEDIUM') ? 'warning' : 'nominal') as any
+    },
+    pump: {
+      rpm: state?.equipment?.pump?.data?.rpm ?? 2900,
+      vibration: state?.equipment?.pump?.data?.vibration ?? 1.2,
+      flow_rate: state?.equipment?.pump?.data?.flow ?? 10.0,
+      inlet_temperature: state?.equipment?.pump?.data?.inlet_temperature ?? 25.2,
+      outlet_temperature: state?.equipment?.pump?.data?.outlet_temperature ?? 38.1,
+      head: (state?.equipment?.pump?.data as any)?.head ?? 24.5,
+      power_kw: (state?.equipment?.pump?.data as any)?.power_kw ?? 1.45,
+      efficiency: (state?.equipment?.pump?.data as any)?.efficiency ?? 0.85,
+      status: (state?.equipment?.pump?.data?.health ?? 100) < 60 ? 'critical' : (state?.equipment?.pump?.data?.health ?? 100) < 85 ? 'warning' : 'nominal'
+    },
+    heat_exchanger: {
+      inlet_temperature: state?.equipment?.heat_exchanger?.data?.inlet_temperature ?? 25.2,
+      outlet_temperature: state?.equipment?.heat_exchanger?.data?.outlet_temperature ?? 45.0,
+      temperature_difference: state?.equipment?.heat_exchanger?.data?.temperature_difference ?? 19.8,
+      heat_transfer_indicator: state?.equipment?.heat_exchanger?.data?.heat_transfer_indicator ?? 95.0,
+      temp_in: state?.equipment?.heat_exchanger?.data?.inlet_temperature ?? 25.2,
+      temp_out: state?.equipment?.heat_exchanger?.data?.outlet_temperature ?? 45.0,
+      delta_t: state?.equipment?.heat_exchanger?.data?.temperature_difference ?? 19.8,
+      overall_u: (state?.equipment?.heat_exchanger?.data as any)?.overall_u ?? 850.0,
+      fouling_factor: (state?.equipment?.heat_exchanger?.data as any)?.fouling_factor ?? 0.0,
+      heat_duty: (state?.equipment?.heat_exchanger?.data as any)?.heat_duty ?? 13.95,
+      delta_p: (state?.equipment?.heat_exchanger?.data as any)?.delta_p ?? 0.1,
+      thermal_condition: (state?.equipment?.heat_exchanger?.data as any)?.thermal_condition ?? 1.0,
+      status: (state?.equipment?.heat_exchanger?.data?.health ?? 100) < 60 ? 'critical' : (state?.equipment?.heat_exchanger?.data?.health ?? 100) < 85 ? 'warning' : 'nominal'
+    },
+    reactor: {
+      temperature: state?.equipment?.reactor?.data?.temperature ?? 85.0,
+      pressure: state?.equipment?.reactor?.data?.pressure ?? 2.05,
+      level: state?.equipment?.reactor?.data?.level ?? 50.0,
+      agitator_speed: state?.equipment?.reactor?.data?.agitator_speed ?? 350,
+      cooling_status: state?.equipment?.reactor?.data?.cooling_status ?? 1,
+      cooling_flow: (state?.equipment?.reactor?.data as any)?.cooling_flow ?? 15.0,
+      conversion: (state?.equipment?.reactor?.data as any)?.conversion ?? 0.782,
+      residence_time: (state?.equipment?.reactor?.data as any)?.residence_time ?? 50.0,
+      heat_removal: (state?.equipment?.reactor?.data as any)?.heat_removal ?? 12.4,
+      heat_generation: (state?.equipment?.reactor?.data as any)?.heat_generation ?? 12.4,
+      status: (state?.equipment?.reactor?.data?.health ?? 100) < 60 ? 'critical' : (state?.equipment?.reactor?.data?.health ?? 100) < 85 ? 'warning' : 'nominal'
+    },
+    distillation: {
+      top_temperature: state?.equipment?.distillation?.data?.top_temperature ?? 76.5,
+      bottom_temperature: state?.equipment?.distillation?.data?.bottom_temperature ?? 98.4,
+      pressure: state?.equipment?.distillation?.data?.pressure ?? 2.10,
+      column_pressure: (state?.equipment?.distillation?.data as any)?.column_pressure ?? state?.equipment?.distillation?.data?.pressure ?? 1.05,
+      level: state?.equipment?.distillation?.data?.level ?? 52.0,
+      bottoms_level: state?.equipment?.distillation?.data?.level ?? 55.0,
+      reflux_ratio: state?.equipment?.distillation?.data?.reflux_ratio ?? 1.25,
+      separation_purity: (state?.equipment?.distillation?.data as any)?.separation_purity ?? 0.985,
+      reboiler_duty: (state?.equipment?.distillation?.data as any)?.reboiler_duty ?? 18.5,
+      condenser_duty: (state?.equipment?.distillation?.data as any)?.condenser_duty ?? 16.2,
+      status: (state?.equipment?.distillation?.data?.health ?? 100) < 60 ? 'critical' : (state?.equipment?.distillation?.data?.health ?? 100) < 85 ? 'warning' : 'nominal'
+    },
+    streams: (state as any)?.streams || []
   };
 
-  // Unit health & abnormal conditions
-  const isPumpAbnormal = (pump.vibration || 0) > 0.20 || (pump.rpm || 2450) < 2000;
-  const isHxAbnormal = (hx.temperature_difference || 12.9) < 5.0 || ((hx.efficiency ?? 95) < 50.0);
-  const isReactorCritical = reactor.cooling_status === 0 || (reactor.temperature || 65) > 78.0 || (reactor.pressure || 2.05) > 2.60;
-  const isDistAbnormal = (dist.reflux_ratio || 1.85) < 1.1 || (dist.top_temperature || 76.5) > 80.0 || (dist.pressure || 2.10) > 2.50;
+  const streams: ProcessStream[] = (telemetry.streams && telemetry.streams.length > 0)
+    ? telemetry.streams
+    : [
+        { id: 'S-100', from: 'T-100', to: 'P-101', name: 'Raw Feed Stream', flow_rate: telemetry.pump?.flow_rate || 10.0, temperature: 25.0, pressure: 1.01, composition: { reactant_A: 1.0 }, status: 'nominal' },
+        { id: 'S-101', from: 'P-101', to: 'E-101', name: 'Pumped Feed Stream', flow_rate: telemetry.pump?.flow_rate || 10.0, temperature: (telemetry.heat_exchanger?.temp_in || 25.2), pressure: 2.15, composition: { reactant_A: 1.0 }, status: 'nominal' },
+        { id: 'S-102', from: 'E-101', to: 'R-101', name: 'Pre-Heated Reactor Feed', flow_rate: telemetry.pump?.flow_rate || 10.0, temperature: (telemetry.heat_exchanger?.temp_out || 45.0), pressure: 2.05, composition: { reactant_A: 1.0 }, status: 'nominal' },
+        { id: 'S-103', from: 'R-101', to: 'D-101', name: 'Reactor Effluent', flow_rate: telemetry.pump?.flow_rate || 10.0, temperature: (telemetry.reactor?.temperature || 85.0), pressure: 1.95, composition: { reactant_A: 1 - (telemetry.reactor?.conversion || 0.78), product_B: telemetry.reactor?.conversion || 0.78 }, status: 'nominal' },
+        { id: 'S-104', from: 'D-101', to: 'T-104', name: 'Distillate Product (Top)', flow_rate: (telemetry.pump?.flow_rate || 10.0) * 0.45, temperature: 78.2, pressure: 1.05, composition: { product_B: telemetry.distillation?.separation_purity || 0.985, reactant_A: 1 - (telemetry.distillation?.separation_purity || 0.985) }, status: 'nominal' },
+        { id: 'S-105', from: 'D-101', to: 'T-105', name: 'Bottoms Heavy Residue', flow_rate: (telemetry.pump?.flow_rate || 10.0) * 0.53, temperature: 102.4, pressure: 1.25, composition: { reactant_A: 0.65, product_B: 0.35 }, status: 'nominal' },
+        { id: 'S-106', from: 'D-101', to: 'D-101', name: 'Internal Column Reflux', flow_rate: ((telemetry.pump?.flow_rate || 10.0) * 0.45) * (telemetry.distillation?.reflux_ratio || 1.25), temperature: 76.5, pressure: 1.05, composition: { product_B: telemetry.distillation?.separation_purity || 0.985 }, status: 'nominal' }
+      ];
 
-  // Stream animation speed based on flow rate (higher flow = faster dash animation, zero flow = stopped)
-  const calculateStreamDuration = (flowRate: number): number => {
-    if (flowRate <= 0.05) return 0;
-    return Math.max(0.4, Math.min(4.5, 15.0 / Math.max(0.2, flowRate)));
-  };
-
-  const durStream1 = calculateStreamDuration(streams.stream_1.flow);
-  const durStream2 = calculateStreamDuration(streams.stream_2.flow);
-  const durStream3 = calculateStreamDuration(streams.stream_3.flow);
-  const durStream4 = calculateStreamDuration(streams.stream_4.flow);
-  const durStream5 = calculateStreamDuration(streams.stream_5.flow);
-  const durReflux = calculateStreamDuration(streams.stream_5.reflux_flow ?? (streams.stream_5.flow * 1.5));
-  const durStream6 = calculateStreamDuration(streams.stream_6.flow);
-
-  // Dispatch What-If simulation changes to backend process graph
-  const handleApplyControl = async (newControls: {
-    pump_rpm?: number;
-    heat_exchanger_efficiency?: number;
-    cooling_status?: number;
-    reflux_ratio?: number;
-    agitator_speed?: number;
-  }) => {
-    try {
-      setIsUpdating(true);
-      if (newControls.pump_rpm !== undefined) {
-        setFeedbackMsg({
-          title: 'PROCESS CHANGE: P-101 RPM',
-          text: `${Math.round(pump.rpm)} → ${newControls.pump_rpm} RPM. Recalculating flows...`
-        });
-      } else if (newControls.heat_exchanger_efficiency !== undefined) {
-        setFeedbackMsg({
-          title: 'PROCESS CHANGE: E-101 EFFICIENCY',
-          text: `Thermal transfer efficiency set to ${newControls.heat_exchanger_efficiency}%. Recalculating ΔT...`
-        });
-      } else if (newControls.cooling_status !== undefined) {
-        setFeedbackMsg({
-          title: 'PROCESS CHANGE: R-101 COOLING',
-          text: `Reactor jacket cooling toggled to ${newControls.cooling_status === 1 ? 'ON (ACTIVE)' : 'OFF (TRIPPED)'}.`,
-          warn: newControls.cooling_status === 0
-        });
-      } else if (newControls.reflux_ratio !== undefined) {
-        setFeedbackMsg({
-          title: 'PROCESS CHANGE: D-101 REFLUX',
-          text: `Reflux ratio adjusted to ${newControls.reflux_ratio.toFixed(2)}. Updating vapor-liquid equilibrium...`
-        });
-      } else if (newControls.agitator_speed !== undefined) {
-        setFeedbackMsg({
-          title: 'PROCESS CHANGE: R-101 AGITATOR',
-          text: `Agitator speed adjusted to ${newControls.agitator_speed} RPM.`
-        });
-      }
-
-      await updateSimulatorControls(newControls);
-
-      setTimeout(() => {
-        setFeedbackMsg({
-          title: 'DOWNSTREAM RESPONSE PROPAGATING',
-          text: 'P-101 flow adjusted · E-101 updated · R-101 feed updated · D-101 boil-up responding'
-        });
-      }, 500);
-
-      setTimeout(() => {
-        setFeedbackMsg(null);
-      }, 3500);
-    } catch (e) {
-      console.error('Failed to update process controls:', e);
-      setFeedbackMsg({
-        title: 'CONTROL ERROR',
-        text: 'Failed to update backend model.',
-        warn: true
-      });
-    } finally {
-      setIsUpdating(false);
+  // Helper to determine status color
+  const getStatusColor = (status?: string) => {
+    switch (status) {
+      case 'critical': return '#ef4444';
+      case 'warning': return '#f59e0b';
+      case 'nominal':
+      default: return '#10b981';
     }
   };
 
-  // Reset entire process simulation to nominal steady-state
-  const handleResetControls = async () => {
-    try {
-      setIsUpdating(true);
-      await resetSimulatorControls();
-      await resetWorkflow('Plant Operator');
-      setPumpRpm(2450);
-      setHxEffic(95);
-      setCoolingStatus(1);
-      setAgitatorSpeed(350);
-      setRefluxRatio(1.85);
-
-      setFeedbackMsg({
-        title: 'PROCESS RESET TO STEADY-STATE',
-        text: 'All hydraulic, thermal, and reaction nodes restored to 2450 RPM nominal conditions.'
-      });
-
-      setTimeout(() => {
-        setFeedbackMsg(null);
-      }, 3000);
-    } catch (e) {
-      console.error('Failed to reset process controls:', e);
-    } finally {
-      setIsUpdating(false);
-    }
+  // Helper to determine stream pipeline color
+  const getStreamPipelineColor = (stream?: ProcessStream) => {
+    if (!stream) return '#0284c7';
+    const flow = stream.flow_rate ?? stream.flow ?? 10.0;
+    if (flow <= 0.05) return '#94a3b8'; // Steel gray when stopped
+    if (stream.status === 'critical') return '#ef4444'; // Abnormal blocked / tripped
+    if (flow < 8.0) return '#f59e0b'; // Reduced flow amber
+    return '#0284c7'; // Engineering blue for nominal flow
   };
 
-  // Trigger unit-specific degradation fault
-  const handleInjectFaultForUnit = async (unitKey: string) => {
-    let fault: FaultMode = 'early_pump_degradation';
-    if (unitKey === 'pump') fault = 'early_pump_degradation';
-    else if (unitKey === 'heat_exchanger') fault = 'early_heat_exchanger_fouling';
-    else if (unitKey === 'reactor') fault = 'early_reactor_cooling_degradation';
-    else if (unitKey === 'distillation') fault = 'early_distillation_reflux_loss';
-
-    if (onSelectFault) {
-      onSelectFault(fault);
-    } else {
-      await setDemoFault(fault);
-    }
-
-    setFeedbackMsg({
-      title: 'FAULT SIMULATION INJECTED',
-      text: `Simulating early degradation for ${unitKey.toUpperCase().replace('_', ' ')}. Causal propagation active.`,
-      warn: true
-    });
-
-    setTimeout(() => {
-      setFeedbackMsg(null);
-    }, 4000);
+  // Helper to calculate dash animation speed based on flow rate
+  const getStreamDashSpeed = (flowRate: number) => {
+    if (flowRate <= 0.05) return 'paused';
+    const duration = Math.max(0.4, Math.min(5.0, 16.0 / Math.max(0.2, flowRate)));
+    return `${duration.toFixed(2)}s`;
   };
 
-  // Helper to select an equipment or stream and notify parent
-  const handleSelect = (id: string) => {
+  const handleUnitClick = (unitId: string) => {
+    setSelectedUnit(unitId);
+    setSelectedStream(null);
+    if (onSelectUnit) onSelectUnit(unitId);
     if (onSelectEquipment) {
-      onSelectEquipment(id);
+      let legacyId = 'pump';
+      if (unitId === 'P-101') legacyId = 'pump';
+      else if (unitId === 'E-101') legacyId = 'heat_exchanger';
+      else if (unitId === 'R-101') legacyId = 'reactor';
+      else if (unitId === 'D-101') legacyId = 'distillation';
+      onSelectEquipment(legacyId);
     }
   };
 
-  // Determine active unit details for the inspector panel
-  const isStream = selectedEquipment.startsWith('stream_');
-  const isTank = selectedEquipment === 'feed_tank' || selectedEquipment === 'top_product' || selectedEquipment === 'bottom_product';
+  const handleStreamClick = (stream: ProcessStream) => {
+    setSelectedStream(stream);
+    setSelectedUnit(null);
+  };
+
+  const getEquipmentTopology = (unitId: string) => {
+    switch (unitId) {
+      case 'T-100':
+        return { upstream: null, downstream: 'P-101', inStream: null, outStream: 'S-100' };
+      case 'P-101':
+        return { upstream: 'T-100', downstream: 'E-101', inStream: 'S-100', outStream: 'S-101' };
+      case 'E-101':
+        return { upstream: 'P-101', downstream: 'R-101', inStream: 'S-101', outStream: 'S-102' };
+      case 'R-101':
+        return { upstream: 'E-101', downstream: 'D-101', inStream: 'S-102', outStream: 'S-103' };
+      case 'D-101':
+        return { upstream: 'R-101', downstream: 'T-104 / T-105', inStream: 'S-103', outStream: 'S-104, S-105' };
+      case 'T-104':
+        return { upstream: 'D-101', downstream: null, inStream: 'S-104', outStream: null };
+      case 'T-105':
+        return { upstream: 'D-101', downstream: null, inStream: 'S-105', outStream: null };
+      default:
+        return { upstream: null, downstream: null, inStream: null, outStream: null };
+    }
+  };
+
+  const currentTopology = selectedUnit ? getEquipmentTopology(selectedUnit) : null;
+
+  // Causal role calculation
+  const getCausalRole = (unitId: string): { role: 'PRIMARY FAULT' | 'DOWNSTREAM IMPACT' | 'NOMINAL'; badgeClass: string; desc: string; outlineColor: string } => {
+    const p = telemetry.pump;
+    const e = telemetry.heat_exchanger;
+    const r = telemetry.reactor;
+    const d = telemetry.distillation;
+
+    if (unitId === 'P-101') {
+      if (p?.status === 'critical') {
+        return { role: 'PRIMARY FAULT', badgeClass: 'primary', desc: 'Active mechanical/hydraulic disturbance initiated at pump (cavitation/trip).', outlineColor: '#ef4444' };
+      }
+      if (p?.status === 'warning') {
+        return { role: 'PRIMARY FAULT', badgeClass: 'warning', desc: 'Pump operating with early deviation / moderate throttling.', outlineColor: '#f59e0b' };
+      }
+      return { role: 'NOMINAL', badgeClass: 'nominal', desc: 'Operating within normal design bounds (2900 RPM, 10 L/min).', outlineColor: '#10b981' };
+    }
+    if (unitId === 'E-101') {
+      if (e?.status === 'critical' || e?.status === 'warning') {
+        if (p?.status === 'critical' || p?.status === 'warning') {
+          return { role: 'DOWNSTREAM IMPACT', badgeClass: 'downstream', desc: 'Thermal transfer compromised due to reduced upstream flow from P-101.', outlineColor: '#ea580c' };
+        }
+        return { role: 'PRIMARY FAULT', badgeClass: 'primary', desc: 'Thermal resistance fouling initiated on tube wall surfaces.', outlineColor: '#ef4444' };
+      }
+      return { role: 'NOMINAL', badgeClass: 'nominal', desc: 'Heat transfer rate optimal (Tout: 45°C).', outlineColor: '#10b981' };
+    }
+    if (unitId === 'R-101') {
+      if (r?.status === 'critical' || r?.status === 'warning') {
+        if ((p?.status === 'critical' || p?.status === 'warning') && (r.temperature || 85) <= 85) {
+          return { role: 'DOWNSTREAM IMPACT', badgeClass: 'downstream', desc: 'Reaction residence time lengthened and conversion shifted by feed rate loss.', outlineColor: '#ea580c' };
+        }
+        return { role: 'PRIMARY FAULT', badgeClass: 'primary', desc: 'Jacket cooling failure or runaway exotherm condition.', outlineColor: '#ef4444' };
+      }
+      return { role: 'NOMINAL', badgeClass: 'nominal', desc: 'CSTR conversion & cooling balance steady (78% conv).', outlineColor: '#10b981' };
+    }
+    if (unitId === 'D-101') {
+      if (d?.status === 'critical' || d?.status === 'warning') {
+        if (p?.status === 'critical' || r?.status === 'critical') {
+          return { role: 'DOWNSTREAM IMPACT', badgeClass: 'downstream', desc: 'Vapor-liquid equilibrium perturbed by upstream feed composition/flow shift.', outlineColor: '#ea580c' };
+        }
+        return { role: 'PRIMARY FAULT', badgeClass: 'primary', desc: 'Reflux pump loss, condenser flood, or reboiler duty imbalance.', outlineColor: '#ef4444' };
+      }
+      return { role: 'NOMINAL', badgeClass: 'nominal', desc: 'Top/bottom separation purity on specification (98.5%).', outlineColor: '#10b981' };
+    }
+    return { role: 'NOMINAL', badgeClass: 'nominal', desc: 'Nominal storage/feed operation.', outlineColor: '#10b981' };
+  };
+
+  // Causal Chain Steps for Flow Banner
+  const pumpCausal = getCausalRole('P-101');
+  const exchCausal = getCausalRole('E-101');
+  const reactCausal = getCausalRole('R-101');
+  const distCausal = getCausalRole('D-101');
+
+  const handleApplyControlChange = async (overrides: ManualControlOverrides) => {
+    setIsUpdatingControls(true);
+    try {
+      if (onUpdateSimulatorControls) {
+        await onUpdateSimulatorControls(overrides);
+      } else {
+        await apiUpdateControls(overrides);
+      }
+    } catch (e) {
+      console.error('Failed to update simulator controls:', e);
+    } finally {
+      setIsUpdatingControls(false);
+    }
+  };
+
+  const handleReset = async () => {
+    setLocalControls({});
+    if (onResetSimulation) {
+      await onResetSimulation();
+    } else {
+      await apiResetSimulation();
+    }
+  };
+
+  const handleModeChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (onApplyPreset) {
+      onApplyPreset(val);
+    } else if (onSelectFault) {
+      onSelectFault(val);
+    } else {
+      await apiSetScenario(val);
+    }
+  };
+
+  const handleAskAi = () => {
+    if (onAskAiAbout && selectedUnit) {
+      let legacyId = 'pump';
+      if (selectedUnit === 'P-101') legacyId = 'pump';
+      else if (selectedUnit === 'E-101') legacyId = 'heat_exchanger';
+      else if (selectedUnit === 'R-101') legacyId = 'reactor';
+      else if (selectedUnit === 'D-101') legacyId = 'distillation';
+      onAskAiAbout(legacyId);
+    }
+  };
 
   return (
-    <section className="flowsheet-container" aria-label="Chemical Engineering Process Flowsheet">
-      {/* 1. FLOWSHEET TOP TOOLBAR */}
-      <div className="flowsheet-toolbar">
-        <div className="flowsheet-title-group">
-          <div className="flowsheet-tag-badge">ASPEN PFD</div>
+    <div className="process-flowsheet-card">
+      {/* 1. Header Toolbar with Preset Modes and Global Actions */}
+      <div className="flowsheet-header">
+        <div className="flowsheet-title-area">
+          <div className="flowsheet-icon-box">
+            <Layers className="flowsheet-main-icon" />
+          </div>
           <div>
-            <h3 className="flowsheet-main-title">
-              CHEMDIAG DYNAMIC PROCESS FLOWSHEET <span className="numeric-data" style={{ color: 'var(--primary-blue)', fontSize: '0.8rem' }}>({pumpFlow.toFixed(1)} L/min Water Train)</span>
-            </h3>
-            <p className="flowsheet-sub-title">
-              Coupled First-Principles Flowsheet · Upstream parameter changes dynamically propagate downstream · Interactive PFD
+            <div className="flex items-center gap-2">
+              <h2 className="flowsheet-title">Process Flow Diagram (PFD)</h2>
+              <span className="pfd-status-pill online">
+                <span className="pfd-status-pulse"></span>
+                First-Principles Causal Dynamics
+              </span>
+            </div>
+            <p className="flowsheet-subtitle">
+              Interactive Chemical Train: T-100 Feed &rarr; P-101 Centrifugal Pump &rarr; E-101 Shell &amp; Tube &rarr; R-101 CSTR Reactor &rarr; D-101 Binary Distillation &rarr; T-104/T-105 Products
             </p>
           </div>
         </div>
 
-        <div className="flowsheet-toolbar-actions">
+        <div className="flowsheet-actions">
+          {/* Operating Mode Dropdown */}
+          <div className="flowsheet-mode-selector">
+            <label className="flowsheet-mode-label">Process State:</label>
+            <select
+              className="flowsheet-mode-dropdown"
+              disabled={isLoadingPreset}
+              onChange={handleModeChange}
+              value={telemetry?.active_scenario || 'normal'}
+            >
+              <option value="normal">Nominal Steady State (10.0 L/min)</option>
+              <option value="early_pump_degradation">Fault: Early Pump Cavitation / Degradation (P-101)</option>
+              <option value="early_heat_exchanger_fouling">Fault: Shell &amp; Tube Heat Fouling (E-101)</option>
+              <option value="early_reactor_cooling_degradation">Fault: Reactor Cooling Trip / Exotherm (R-101)</option>
+              <option value="early_distillation_reflux_loss">Fault: Distillation Reflux Pump Loss (D-101)</option>
+              <option value="unknown_fault">Fault: Complex Multi-Unit Disturbance</option>
+            </select>
+          </div>
+
           <button
-            className="reset-flowsheet-btn"
-            onClick={handleResetControls}
-            disabled={isUpdating}
-            title="Reset all process variables to nominal steady state"
+            className="pfd-btn-secondary"
+            onClick={handleReset}
+            title="Reset simulation parameters to nominal baseline"
           >
-            <RotateCcw size={12} />
-            <span>Reset Process</span>
+            <RotateCcw className="w-3.5 h-3.5" />
+            Reset Baseline
           </button>
         </div>
       </div>
 
-      {/* 2. DYNAMIC PROPAGATION BREADCRUMB BAR (CLICKABLE NODES) */}
-      <div className="propagation-banner">
-        <div className="propagation-label">
-          <Radio size={12} color="var(--primary-blue)" className="pulse-icon" />
-          <span>LIVE CAUSE & EFFECT CHAIN:</span>
+      {/* 2. Top Overview Process Strip */}
+      <div className="pfd-overview-strip">
+        <div className="pfd-overview-item">
+          <span className="pfd-overview-label">Process Health</span>
+          <span className={`pfd-overview-val ${telemetry?.overall_health?.overall_status || 'nominal'}`}>
+            {telemetry?.overall_health?.overall_status ? telemetry.overall_health.overall_status.toUpperCase() : 'NOMINAL'}
+          </span>
         </div>
-        <div className="propagation-steps">
-          <span
-            className={`prop-node clickable ${selectedEquipment === 'pump' ? 'active-selected' : ''} ${isPumpAbnormal ? 'fault' : 'nominal'}`}
-            onClick={() => handleSelect('pump')}
-            title="Click to inspect P-101 Centrifugal Pump"
-          >
-            P-101: <strong className="numeric-data">{Math.round(pump.rpm)} RPM</strong> (<span className="numeric-data">{pumpFlow.toFixed(1)} L/min</span>)
+        <div className="pfd-overview-item">
+          <span className="pfd-overview-label">Train Feed Flow (S-100)</span>
+          <span className="pfd-overview-val mono">
+            {streams[0]?.flow_rate?.toFixed(2) || (telemetry?.pump?.flow_rate || 10.0).toFixed(2)} L/min
           </span>
-          <ArrowRight size={11} className="prop-arrow" />
-          <span
-            className={`prop-node clickable ${selectedEquipment === 'heat_exchanger' ? 'active-selected' : ''} ${isHxAbnormal ? 'fault' : 'nominal'}`}
-            onClick={() => handleSelect('heat_exchanger')}
-            title="Click to inspect E-101 Heat Exchanger"
-          >
-            E-101: <strong className="numeric-data">ΔT = {hx.temperature_difference.toFixed(1)} °C</strong> (<span className="numeric-data">Tout = {hx.outlet_temperature.toFixed(1)} °C</span>)
+        </div>
+        <div className="pfd-overview-item">
+          <span className="pfd-overview-label">Health Score</span>
+          <span className="pfd-overview-val mono">
+            {telemetry?.overall_health?.health_index !== undefined ? `${telemetry.overall_health.health_index.toFixed(1)}%` : '98.5%'}
           </span>
-          <ArrowRight size={11} className="prop-arrow" />
-          <span
-            className={`prop-node clickable ${selectedEquipment === 'reactor' ? 'active-selected' : ''} ${isReactorCritical ? 'critical' : 'nominal'}`}
-            onClick={() => handleSelect('reactor')}
-            title="Click to inspect R-101 CSTR Reactor"
-          >
-            R-101: <strong className="numeric-data">{reactor.temperature.toFixed(1)} °C</strong> | <strong className="numeric-data">{reactor.pressure.toFixed(2)} bar</strong> (<span className="numeric-data">Cooling: {reactor.cooling_status === 1 ? 'ON' : 'OFF'}</span>)
+        </div>
+        <div className="pfd-overview-item">
+          <span className="pfd-overview-label">Reactor Conversion</span>
+          <span className="pfd-overview-val mono">
+            {telemetry?.reactor?.conversion !== undefined ? `${(telemetry.reactor.conversion * 100).toFixed(1)}%` : '78.2%'}
           </span>
-          <ArrowRight size={11} className="prop-arrow" />
-          <span
-            className={`prop-node clickable ${selectedEquipment === 'distillation' ? 'active-selected' : ''} ${isDistAbnormal ? 'fault' : 'nominal'}`}
-            onClick={() => handleSelect('distillation')}
-            title="Click to inspect D-101 Distillation Column"
-          >
-            D-101: <strong className="numeric-data">Reflux = {dist.reflux_ratio.toFixed(2)}</strong> (<span className="numeric-data">Top T = {dist.top_temperature.toFixed(1)} °C</span>)
+        </div>
+        <div className="pfd-overview-item">
+          <span className="pfd-overview-label">Distillate Purity (x_D)</span>
+          <span className="pfd-overview-val mono">
+            {telemetry?.distillation?.separation_purity !== undefined ? `${(telemetry.distillation.separation_purity * 100).toFixed(1)}%` : '98.5%'}
+          </span>
+        </div>
+        <div className="pfd-overview-item">
+          <span className="pfd-overview-label">Active Scenario</span>
+          <span className="pfd-overview-val highlight">
+            {telemetry?.active_scenario && telemetry.active_scenario !== 'normal'
+              ? telemetry.active_scenario.replace(/_/g, ' ').toUpperCase()
+              : 'NOMINAL STEADY STATE'}
           </span>
         </div>
       </div>
 
-      {/* 3. REAL-TIME INTERACTION FEEDBACK BANNER */}
-      {feedbackMsg && (
-        <div className={`pfd-feedback-banner ${feedbackMsg.warn ? 'warn' : ''}`}>
-          <div className="pfd-feedback-left">
-            <span className="pfd-feedback-badge">{feedbackMsg.title}</span>
-            <span>{feedbackMsg.text}</span>
-          </div>
-          <Sparkles size={13} />
+      {/* 2.5 Causal Propagation Chain Banner */}
+      <div className="pfd-causal-propagation-bar">
+        <div className="pfd-causal-propagation-header">
+          <GitCommit className="w-3.5 h-3.5 text-sky-600" />
+          <span className="pfd-causal-bar-title">CAUSE &rarr; EFFECT PROPAGATION CHAIN</span>
         </div>
-      )}
+        <div className="pfd-causal-chain-nodes">
+          {/* Node 1: T-100 */}
+          <div className="pfd-causal-node nominal" onClick={() => handleUnitClick('T-100')}>
+            <div className="pfd-node-top">
+              <span className="pfd-node-tag">T-100</span>
+              <span className="pfd-node-role nominal">FEED</span>
+            </div>
+            <span className="pfd-node-metric">75% LVL</span>
+          </div>
 
-      {/* 4. MAIN ASPEN PFD SCHEMATIC CANVAS */}
-      <div className="aspen-canvas-wrapper">
+          <ArrowRight className="w-3.5 h-3.5 pfd-causal-arrow" />
+
+          {/* Node 2: P-101 */}
+          <div
+            className={`pfd-causal-node ${pumpCausal.badgeClass} ${selectedUnit === 'P-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('P-101')}
+          >
+            <div className="pfd-node-top">
+              <span className="pfd-node-tag">P-101</span>
+              <span className={`pfd-node-role ${pumpCausal.badgeClass}`}>{pumpCausal.role}</span>
+            </div>
+            <span className="pfd-node-metric">
+              {Math.round(telemetry.pump?.rpm || 2900)} RPM &bull; {(telemetry.pump?.flow_rate || 10.0).toFixed(1)} L/m
+            </span>
+          </div>
+
+          <ArrowRight className="w-3.5 h-3.5 pfd-causal-arrow" />
+
+          {/* Node 3: E-101 */}
+          <div
+            className={`pfd-causal-node ${exchCausal.badgeClass} ${selectedUnit === 'E-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('E-101')}
+          >
+            <div className="pfd-node-top">
+              <span className="pfd-node-tag">E-101</span>
+              <span className={`pfd-node-role ${exchCausal.badgeClass}`}>{exchCausal.role}</span>
+            </div>
+            <span className="pfd-node-metric">
+              {(telemetry.heat_exchanger?.temp_out || 45.0).toFixed(1)}°C &bull; {telemetry.heat_exchanger?.overall_u ? Math.round(telemetry.heat_exchanger.overall_u) : 850} W/m²K
+            </span>
+          </div>
+
+          <ArrowRight className="w-3.5 h-3.5 pfd-causal-arrow" />
+
+          {/* Node 4: R-101 */}
+          <div
+            className={`pfd-causal-node ${reactCausal.badgeClass} ${selectedUnit === 'R-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('R-101')}
+          >
+            <div className="pfd-node-top">
+              <span className="pfd-node-tag">R-101</span>
+              <span className={`pfd-node-role ${reactCausal.badgeClass}`}>{reactCausal.role}</span>
+            </div>
+            <span className="pfd-node-metric">
+              {(telemetry.reactor?.temperature || 85.0).toFixed(1)}°C &bull; {((telemetry.reactor?.conversion || 0.782) * 100).toFixed(1)}% XA
+            </span>
+          </div>
+
+          <ArrowRight className="w-3.5 h-3.5 pfd-causal-arrow" />
+
+          {/* Node 5: D-101 */}
+          <div
+            className={`pfd-causal-node ${distCausal.badgeClass} ${selectedUnit === 'D-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('D-101')}
+          >
+            <div className="pfd-node-top">
+              <span className="pfd-node-tag">D-101</span>
+              <span className={`pfd-node-role ${distCausal.badgeClass}`}>{distCausal.role}</span>
+            </div>
+            <span className="pfd-node-metric">
+              {((telemetry.distillation?.separation_purity || 0.985) * 100).toFixed(1)}% xD &bull; {(telemetry.distillation?.column_pressure || 1.05).toFixed(2)} bar
+            </span>
+          </div>
+
+          <ArrowRight className="w-3.5 h-3.5 pfd-causal-arrow" />
+
+          {/* Node 6: Products */}
+          <div className="pfd-causal-node nominal" onClick={() => handleUnitClick('T-104')}>
+            <div className="pfd-node-top">
+              <span className="pfd-node-tag">T-104 / T-105</span>
+              <span className="pfd-node-role nominal">PRODUCTS</span>
+            </div>
+            <span className="pfd-node-metric">SPEC COMPLIANT</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. Main SVG Interactive Flowsheet Diagram (Engineering Off-White Canvas) */}
+      <div className="flowsheet-svg-wrapper">
         <svg
-          className="aspen-svg-canvas"
-          viewBox="0 0 1120 480"
+          viewBox="0 0 1180 500"
+          className="flowsheet-svg"
           preserveAspectRatio="xMidYMid meet"
-          role="img"
-          aria-label="Process Flow Diagram"
         >
-          {/* BACKGROUND TECHNICAL GRID & DEFS */}
           <defs>
-            <pattern id="millimeter-grid" width="20" height="20" patternUnits="userSpaceOnUse">
-              <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#F1F5F9" strokeWidth="1" />
-            </pattern>
+            {/* Clean Engineering Equipment Fills */}
+            <linearGradient id="engVesselFill" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="#ffffff" />
+              <stop offset="50%" stopColor="#f8fafc" />
+              <stop offset="100%" stopColor="#f1f5f9" />
+            </linearGradient>
 
-            {/* Stream Arrowhead Markers */}
-            <marker id="stream-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="#0284C7" />
-            </marker>
-            <marker id="stream-arrow-reflux" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="#2563EB" />
-            </marker>
-            <marker id="stream-arrow-bottoms" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="#059669" />
-            </marker>
+            <linearGradient id="liquidFeedGradient" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="rgba(14, 165, 233, 0.35)" />
+              <stop offset="100%" stopColor="rgba(14, 165, 233, 0.08)" />
+            </linearGradient>
 
-            {/* Drop Shadow Filter */}
-            <filter id="unit-shadow" x="-8%" y="-8%" width="120%" height="120%">
-              <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#0F172A" floodOpacity="0.06" />
-            </filter>
-            <filter id="pfd-glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="3" result="blur" />
-              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            <linearGradient id="liquidReactorGradient" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="rgba(139, 92, 246, 0.35)" />
+              <stop offset="100%" stopColor="rgba(139, 92, 246, 0.08)" />
+            </linearGradient>
+
+            <linearGradient id="liquidDistillateGradient" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="rgba(16, 185, 129, 0.35)" />
+              <stop offset="100%" stopColor="rgba(16, 185, 129, 0.08)" />
+            </linearGradient>
+
+            <linearGradient id="liquidBottomsGradient" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="rgba(245, 158, 11, 0.35)" />
+              <stop offset="100%" stopColor="rgba(245, 158, 11, 0.08)" />
+            </linearGradient>
+
+            <filter id="pfd-subtle-shadow" x="-5%" y="-5%" width="110%" height="110%">
+              <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#0f172a" floodOpacity="0.08" />
             </filter>
           </defs>
 
-          {/* Canvas Background Grid */}
-          <rect width="100%" height="100%" fill="#FFFFFF" />
-          <rect width="100%" height="100%" fill="url(#millimeter-grid)" opacity="0.8" />
+          {/* Clean Engineering Grid Background */}
+          <pattern id="pfd-grid-light" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e2e8f0" strokeWidth="0.75" />
+          </pattern>
+          <rect width="1180" height="500" fill="#f8fafc" />
+          <rect width="1180" height="500" fill="url(#pfd-grid-light)" />
 
           {/* ========================================================================= */}
-          {/* PROCESS STREAMS (CLICKABLE WITH DYNAMIC SPEED PROPORTIONAL TO FLOW Q) */}
+          {/* PROCESS PIPELINES / STREAMS (S-100 to S-106)                              */}
           {/* ========================================================================= */}
 
-          {/* STREAM 01: Water Reservoir -> P-101 Pump */}
-          <g
-            className={`process-stream-group ${selectedEquipment === 'stream_1' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_1')}
-          >
-            <title>Stream 01: Raw Water Supply Feed ({streams.stream_1.flow.toFixed(1)} L/min) - Click to inspect</title>
-            {/* Transparent wide hit area for effortless clicking */}
-            <path d="M 85 240 L 175 240" stroke="transparent" strokeWidth="18" fill="none" />
-            {selectedEquipment === 'stream_1' && (
-              <path d="M 85 240 L 175 240" stroke="#93C5FD" strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.6" />
-            )}
+          {/* S-100: T-100 -> P-101 */}
+          <g className={`stream-group ${selectedStream?.id === 'S-100' ? 'selected' : ''}`} onClick={() => handleStreamClick(streams[0])}>
+            <path d="M 110 280 L 190 280" className="pfd-pipe-base" />
             <path
-              d="M 85 240 L 175 240"
-              className="stream-line main-flow"
+              d="M 110 280 L 190 280"
+              className="pfd-pipe-flow"
               style={{
-                animationDuration: `${durStream1}s`,
-                animationPlayState: durStream1 === 0 ? 'paused' : 'running'
+                stroke: getStreamPipelineColor(streams[0]),
+                animationDuration: getStreamDashSpeed(streams[0]?.flow_rate || 10.0),
+                animationPlayState: (streams[0]?.flow_rate || 10.0) <= 0.05 ? 'paused' : 'running'
               }}
-              markerEnd="url(#stream-arrow)"
             />
           </g>
 
-          {/* STREAM 02: P-101 Pump -> E-101 Heat Exchanger */}
-          <g
-            className={`process-stream-group ${selectedEquipment === 'stream_2' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_2')}
-          >
-            <title>Stream 02: Pump Discharge Line ({streams.stream_2.flow.toFixed(1)} L/min) - Click to inspect</title>
-            <path d="M 245 240 L 375 240" stroke="transparent" strokeWidth="18" fill="none" />
-            {selectedEquipment === 'stream_2' && (
-              <path d="M 245 240 L 375 240" stroke="#93C5FD" strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.6" />
-            )}
+          {/* S-101: P-101 -> E-101 */}
+          <g className={`stream-group ${selectedStream?.id === 'S-101' ? 'selected' : ''}`} onClick={() => handleStreamClick(streams[1])}>
+            <path d="M 230 260 L 230 220 L 330 220" className="pfd-pipe-base" />
             <path
-              d="M 245 240 L 375 240"
-              className="stream-line main-flow"
+              d="M 230 260 L 230 220 L 330 220"
+              className="pfd-pipe-flow"
               style={{
-                animationDuration: `${durStream2}s`,
-                animationPlayState: durStream2 === 0 ? 'paused' : 'running'
+                stroke: getStreamPipelineColor(streams[1]),
+                animationDuration: getStreamDashSpeed(streams[1]?.flow_rate || 10.0),
+                animationPlayState: (streams[1]?.flow_rate || 10.0) <= 0.05 ? 'paused' : 'running'
               }}
-              markerEnd="url(#stream-arrow)"
             />
           </g>
 
-          {/* STREAM 03: E-101 Heat Exchanger -> R-101 CSTR Reactor */}
-          <g
-            className={`process-stream-group ${selectedEquipment === 'stream_3' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_3')}
-          >
-            <title>Stream 03: Heat Exchanger Effluent ({streams.stream_3.flow.toFixed(1)} L/min) - Click to inspect</title>
-            <path d="M 485 240 L 610 240" stroke="transparent" strokeWidth="18" fill="none" />
-            {selectedEquipment === 'stream_3' && (
-              <path d="M 485 240 L 610 240" stroke="#93C5FD" strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.6" />
-            )}
+          {/* S-102: E-101 -> R-101 */}
+          <g className={`stream-group ${selectedStream?.id === 'S-102' ? 'selected' : ''}`} onClick={() => handleStreamClick(streams[2])}>
+            <path d="M 450 220 L 510 220 L 510 160 L 560 160 L 560 175" className="pfd-pipe-base" />
             <path
-              d="M 485 240 L 610 240"
-              className="stream-line main-flow"
+              d="M 450 220 L 510 220 L 510 160 L 560 160 L 560 175"
+              className="pfd-pipe-flow"
               style={{
-                animationDuration: `${durStream3}s`,
-                animationPlayState: durStream3 === 0 ? 'paused' : 'running'
+                stroke: getStreamPipelineColor(streams[2]),
+                animationDuration: getStreamDashSpeed(streams[2]?.flow_rate || 10.0),
+                animationPlayState: (streams[2]?.flow_rate || 10.0) <= 0.05 ? 'paused' : 'running'
               }}
-              markerEnd="url(#stream-arrow)"
             />
           </g>
 
-          {/* STREAM 04: R-101 CSTR Reactor -> D-101 Distillation Column */}
-          <g
-            className={`process-stream-group ${selectedEquipment === 'stream_4' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_4')}
-          >
-            <title>Stream 04: Reactor Effluent Line ({streams.stream_4.flow.toFixed(1)} L/min) - Click to inspect</title>
-            <path d="M 725 240 L 850 240" stroke="transparent" strokeWidth="18" fill="none" />
-            {selectedEquipment === 'stream_4' && (
-              <path d="M 725 240 L 850 240" stroke="#93C5FD" strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.6" />
-            )}
+          {/* S-103: R-101 -> D-101 */}
+          <g className={`stream-group ${selectedStream?.id === 'S-103' ? 'selected' : ''}`} onClick={() => handleStreamClick(streams[3])}>
+            <path d="M 580 370 L 580 400 L 730 400 L 730 260 L 760 260" className="pfd-pipe-base" />
             <path
-              d="M 725 240 L 850 240"
-              className="stream-line main-flow"
+              d="M 580 370 L 580 400 L 730 400 L 730 260 L 760 260"
+              className="pfd-pipe-flow"
               style={{
-                animationDuration: `${durStream4}s`,
-                animationPlayState: durStream4 === 0 ? 'paused' : 'running'
+                stroke: getStreamPipelineColor(streams[3]),
+                animationDuration: getStreamDashSpeed(streams[3]?.flow_rate || 10.0),
+                animationPlayState: (streams[3]?.flow_rate || 10.0) <= 0.05 ? 'paused' : 'running'
               }}
-              markerEnd="url(#stream-arrow)"
             />
           </g>
 
-          {/* STREAM 05: D-101 Overhead -> Condenser -> Top Distillate Product */}
-          <g
-            className={`process-stream-group ${selectedEquipment === 'stream_5' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_5')}
-          >
-            <title>Stream 05: Distillate Vapor & Reflux Loop ({streams.stream_5.flow.toFixed(1)} L/min) - Click to inspect</title>
-            <path d="M 920 100 L 920 55 L 1020 55" stroke="transparent" strokeWidth="18" fill="none" />
-            <path d="M 975 55 L 975 125 L 945 125" stroke="transparent" strokeWidth="18" fill="none" />
-            {selectedEquipment === 'stream_5' && (
-              <>
-                <path d="M 920 100 L 920 55 L 1020 55" stroke="#93C5FD" strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.6" />
-                <path d="M 975 55 L 975 125 L 945 125" stroke="#93C5FD" strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.6" />
-              </>
-            )}
+          {/* S-104: D-101 Top Vapor -> C-101 Condenser -> T-104 */}
+          <g className={`stream-group ${selectedStream?.id === 'S-104' ? 'selected' : ''}`} onClick={() => handleStreamClick(streams[4])}>
+            <path d="M 800 80 L 800 50 L 900 50" className="pfd-pipe-base" />
+            <path d="M 940 50 L 970 50 L 970 90 L 1050 90 L 1050 120" className="pfd-pipe-base" />
             <path
-              d="M 920 100 L 920 55 L 1020 55"
-              className="stream-line vapor-flow"
+              d="M 800 80 L 800 50 L 900 50 M 940 50 L 970 50 L 970 90 L 1050 90 L 1050 120"
+              className="pfd-pipe-flow"
               style={{
-                animationDuration: `${durStream5}s`,
-                animationPlayState: durStream5 === 0 ? 'paused' : 'running'
+                stroke: getStreamPipelineColor(streams[4]),
+                animationDuration: getStreamDashSpeed(streams[4]?.flow_rate || 4.5),
+                animationPlayState: (streams[4]?.flow_rate || 4.5) <= 0.05 ? 'paused' : 'running'
               }}
-              markerEnd="url(#stream-arrow)"
-            />
-            {/* STREAM 05 REFLUX RETURN */}
-            <path
-              d="M 975 55 L 975 125 L 945 125"
-              className="stream-line reflux-flow"
-              style={{
-                animationDuration: `${durReflux}s`,
-                animationPlayState: durReflux === 0 ? 'paused' : 'running'
-              }}
-              markerEnd="url(#stream-arrow-reflux)"
             />
           </g>
 
-          {/* STREAM 06: D-101 Bottom -> Bottoms Product Tank */}
-          <g
-            className={`process-stream-group ${selectedEquipment === 'stream_6' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_6')}
-          >
-            <title>Stream 06: Heavy Bottoms Fraction ({streams.stream_6.flow.toFixed(1)} L/min) - Click to inspect</title>
-            <path d="M 920 375 L 920 425 L 1020 425" stroke="transparent" strokeWidth="18" fill="none" />
-            {selectedEquipment === 'stream_6' && (
-              <path d="M 920 375 L 920 425 L 1020 425" stroke="#86EFAC" strokeWidth="6" strokeLinecap="round" fill="none" opacity="0.6" />
-            )}
+          {/* S-106: Reflux Return from Accumulator */}
+          <g className={`stream-group ${selectedStream?.id === 'S-106' ? 'selected' : ''}`} onClick={() => handleStreamClick(streams[6] || streams[0])}>
+            <path d="M 970 90 L 970 110 L 840 110" className="pfd-pipe-base" />
             <path
-              d="M 920 375 L 920 425 L 1020 425"
-              className="stream-line bottoms-flow"
+              d="M 970 90 L 970 110 L 840 110"
+              className="pfd-pipe-flow"
               style={{
-                animationDuration: `${durStream6}s`,
-                animationPlayState: durStream6 === 0 ? 'paused' : 'running'
+                stroke: getStreamPipelineColor(streams[6]),
+                animationDuration: getStreamDashSpeed(streams[6]?.flow_rate || 5.6),
+                animationPlayState: (streams[6]?.flow_rate || 5.6) <= 0.05 ? 'paused' : 'running'
               }}
-              markerEnd="url(#stream-arrow-bottoms)"
             />
           </g>
 
-          {/* ========================================================================= */}
-          {/* FLOATING STREAM TELEMETRY TAGS (CLICKABLE WITH HOVER HIGHLIGHTS) */}
-          {/* ========================================================================= */}
-
-          {/* TAG 01 */}
-          <g
-            transform="translate(100, 195)"
-            className={`stream-telemetry-tag ${selectedEquipment === 'stream_1' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_1')}
-          >
-            <title>Click to inspect Stream 01 (Source Feed)</title>
-            <rect width="68" height="38" rx="4" fill="#FFFFFF" stroke={selectedEquipment === 'stream_1' ? '#2563EB' : '#CBD5E1'} strokeWidth={selectedEquipment === 'stream_1' ? 2 : 1} filter="url(#unit-shadow)" />
-            <circle cx="12" cy="12" r="7" fill="#0284C7" />
-            <text x="12" y="15" fill="#FFFFFF" fontSize="8" fontWeight="800" textAnchor="middle" className="numeric-data">01</text>
-            <text x="24" y="14" fill="#0F172A" fontSize="8" fontWeight="700" className="numeric-data">{streams.stream_1.flow.toFixed(1)} L/m</text>
-            <text x="8" y="28" fill="#64748B" fontSize="7.5" className="numeric-data">{streams.stream_1.temperature.toFixed(1)}°C · {streams.stream_1.pressure.toFixed(2)}b</text>
+          {/* Reboiler E-102 Loop */}
+          <g className="pfd-utility-loop">
+            <path d="M 780 430 L 780 450 L 870 450" className="pfd-pipe-base" />
+            <path d="M 920 440 L 920 400 L 840 400" className="pfd-pipe-base" />
+            <path
+              d="M 780 430 L 780 450 L 870 450 M 920 440 L 920 400 L 840 400"
+              className="pfd-pipe-flow"
+              style={{ stroke: '#f59e0b', animationDuration: '2s' }}
+            />
           </g>
 
-          {/* TAG 02 */}
-          <g
-            transform="translate(280, 195)"
-            className={`stream-telemetry-tag ${selectedEquipment === 'stream_2' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_2')}
-          >
-            <title>Click to inspect Stream 02 (Pump Discharge)</title>
-            <rect width="70" height="38" rx="4" fill="#FFFFFF" stroke={selectedEquipment === 'stream_2' ? '#2563EB' : '#CBD5E1'} strokeWidth={selectedEquipment === 'stream_2' ? 2 : 1} filter="url(#unit-shadow)" />
-            <circle cx="12" cy="12" r="7" fill="#0284C7" />
-            <text x="12" y="15" fill="#FFFFFF" fontSize="8" fontWeight="800" textAnchor="middle" className="numeric-data">02</text>
-            <text x="24" y="14" fill="#0F172A" fontSize="8" fontWeight="700" className="numeric-data">{streams.stream_2.flow.toFixed(1)} L/m</text>
-            <text x="8" y="28" fill="#64748B" fontSize="7.5" className="numeric-data">{streams.stream_2.temperature.toFixed(1)}°C · {streams.stream_2.pressure.toFixed(2)}b</text>
+          {/* S-105: Bottoms draw to T-105 */}
+          <g className={`stream-group ${selectedStream?.id === 'S-105' ? 'selected' : ''}`} onClick={() => handleStreamClick(streams[5])}>
+            <path d="M 800 430 L 800 475 L 1050 475 L 1050 420" className="pfd-pipe-base" />
+            <path
+              d="M 800 430 L 800 475 L 1050 475 L 1050 420"
+              className="pfd-pipe-flow"
+              style={{
+                stroke: getStreamPipelineColor(streams[5]),
+                animationDuration: getStreamDashSpeed(streams[5]?.flow_rate || 5.3),
+                animationPlayState: (streams[5]?.flow_rate || 5.3) <= 0.05 ? 'paused' : 'running'
+              }}
+            />
           </g>
 
-          {/* TAG 03 */}
-          <g
-            transform="translate(518, 195)"
-            className={`stream-telemetry-tag ${selectedEquipment === 'stream_3' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_3')}
-          >
-            <title>Click to inspect Stream 03 (Exchanger Effluent)</title>
-            <rect width="70" height="38" rx="4" fill="#FFFFFF" stroke={selectedEquipment === 'stream_3' ? '#2563EB' : '#CBD5E1'} strokeWidth={selectedEquipment === 'stream_3' ? 2 : 1} filter="url(#unit-shadow)" />
-            <circle cx="12" cy="12" r="7" fill="#0284C7" />
-            <text x="12" y="15" fill="#FFFFFF" fontSize="8" fontWeight="800" textAnchor="middle" className="numeric-data">03</text>
-            <text x="24" y="14" fill="#0F172A" fontSize="8" fontWeight="700" className="numeric-data">{streams.stream_3.flow.toFixed(1)} L/m</text>
-            <text x="8" y="28" fill="#64748B" fontSize="7.5" className="numeric-data">{streams.stream_3.temperature.toFixed(1)}°C · {streams.stream_3.pressure.toFixed(2)}b</text>
+          {/* E-101 Utility Steam In / Condensate Out */}
+          <g className="pfd-utility-loop">
+            <path d="M 390 145 L 390 185" className="pfd-pipe-base stroke-rose-500" strokeDasharray="3 3" />
+            <path d="M 390 255 L 390 295" className="pfd-pipe-base stroke-sky-500" strokeDasharray="3 3" />
+            <text x="390" y="138" fill="#e11d48" fontSize="9" fontWeight="700" textAnchor="middle" fontFamily="monospace">STEAM (130°C)</text>
+            <text x="390" y="307" fill="#0284c7" fontSize="9" fontWeight="700" textAnchor="middle" fontFamily="monospace">CONDENSATE</text>
           </g>
 
-          {/* TAG 04 */}
-          <g
-            transform="translate(755, 195)"
-            className={`stream-telemetry-tag ${selectedEquipment === 'stream_4' ? 'selected' : ''}`}
-            onClick={() => handleSelect('stream_4')}
-          >
-            <title>Click to inspect Stream 04 (Reactor Effluent)</title>
-            <rect width="70" height="38" rx="4" fill="#FFFFFF" stroke={selectedEquipment === 'stream_4' ? '#2563EB' : '#CBD5E1'} strokeWidth={selectedEquipment === 'stream_4' ? 2 : 1} filter="url(#unit-shadow)" />
-            <circle cx="12" cy="12" r="7" fill="#0284C7" />
-            <text x="12" y="15" fill="#FFFFFF" fontSize="8" fontWeight="800" textAnchor="middle" className="numeric-data">04</text>
-            <text x="24" y="14" fill="#0F172A" fontSize="8" fontWeight="700" className="numeric-data">{streams.stream_4.flow.toFixed(1)} L/m</text>
-            <text x="8" y="28" fill="#64748B" fontSize="7.5" className="numeric-data">{streams.stream_4.temperature.toFixed(1)}°C · {streams.stream_4.pressure.toFixed(2)}b</text>
-          </g>
-
-          {/* TAG 05: Top Product */}
-          <g
-            transform="translate(1015, 25)"
-            className={`stream-telemetry-tag ${selectedEquipment === 'stream_5' || selectedEquipment === 'top_product' ? 'selected' : ''}`}
-            onClick={() => handleSelect('top_product')}
-          >
-            <title>Click to inspect Top Distillate Product Tank</title>
-            <rect width="85" height="38" rx="4" fill="#FFFFFF" stroke={selectedEquipment === 'top_product' || selectedEquipment === 'stream_5' ? '#2563EB' : '#CBD5E1'} strokeWidth={selectedEquipment === 'top_product' || selectedEquipment === 'stream_5' ? 2 : 1} filter="url(#unit-shadow)" />
-            <circle cx="12" cy="12" r="7" fill="#2563EB" />
-            <text x="12" y="15" fill="#FFFFFF" fontSize="8" fontWeight="800" textAnchor="middle" className="numeric-data">05</text>
-            <text x="24" y="14" fill="#0F172A" fontSize="8" fontWeight="700" className="numeric-data">Distillate: {streams.stream_5.flow.toFixed(1)}</text>
-            <text x="8" y="28" fill="#64748B" fontSize="7.5" className="numeric-data">Top T: {streams.stream_5.temperature.toFixed(1)}°C · R: {streams.stream_5.reflux_ratio?.toFixed(2)}</text>
-          </g>
-
-          {/* TAG 06: Bottoms Product */}
-          <g
-            transform="translate(1015, 395)"
-            className={`stream-telemetry-tag ${selectedEquipment === 'stream_6' || selectedEquipment === 'bottom_product' ? 'selected' : ''}`}
-            onClick={() => handleSelect('bottom_product')}
-          >
-            <title>Click to inspect Bottoms Storage Tank</title>
-            <rect width="85" height="38" rx="4" fill="#FFFFFF" stroke={selectedEquipment === 'bottom_product' || selectedEquipment === 'stream_6' ? '#059669' : '#CBD5E1'} strokeWidth={selectedEquipment === 'bottom_product' || selectedEquipment === 'stream_6' ? 2 : 1} filter="url(#unit-shadow)" />
-            <circle cx="12" cy="12" r="7" fill="#059669" />
-            <text x="12" y="15" fill="#FFFFFF" fontSize="8" fontWeight="800" textAnchor="middle" className="numeric-data">06</text>
-            <text x="24" y="14" fill="#0F172A" fontSize="8" fontWeight="700" className="numeric-data">Bottoms: {streams.stream_6.flow.toFixed(1)}</text>
-            <text x="8" y="28" fill="#64748B" fontSize="7.5" className="numeric-data">Bottom T: {streams.stream_6.temperature.toFixed(1)}°C</text>
+          {/* R-101 Cooling Water Utility Loop */}
+          <g className="pfd-utility-loop">
+            <path d="M 520 330 L 490 330" className="pfd-pipe-base stroke-sky-500" strokeDasharray="3 3" />
+            <path d="M 640 210 L 670 210" className="pfd-pipe-base stroke-sky-500" strokeDasharray="3 3" />
+            <text x="475" y="333" fill="#0284c7" fontSize="9" fontWeight="700" textAnchor="end" fontFamily="monospace">CW IN (20°C)</text>
+            <text x="680" y="213" fill="#0284c7" fontSize="9" fontWeight="700" textAnchor="start" fontFamily="monospace">CW OUT</text>
           </g>
 
           {/* ========================================================================= */}
-          {/* UNIT 0: RAW WATER FEED TANK */}
+          {/* STREAM TELEMETRY BADGES                                                   */}
           {/* ========================================================================= */}
-          <g
-            transform="translate(30, 190)"
-            className={`aspen-equipment-node ${selectedEquipment === 'feed_tank' ? 'selected' : ''}`}
-            onClick={() => handleSelect('feed_tank')}
-          >
-            <title>Feed Tank (Raw Water Reservoir) - Click to inspect</title>
-            {/* Selection Aura */}
-            {selectedEquipment === 'feed_tank' && (
-              <rect x="-4" y="-4" width="63" height="108" rx="8" fill="none" stroke="var(--primary-blue)" strokeWidth="2.5" strokeDasharray="4 2" />
-            )}
 
-            <rect x="0" y="0" width="55" height="100" rx="6" fill="#F8FAFC" stroke="#64748B" strokeWidth="1.5" filter="url(#unit-shadow)" />
-            <path d="M 0 35 Q 27.5 40 55 35 L 55 100 L 0 100 Z" fill="#E0F2FE" opacity="0.6" />
-            <text x="27.5" y="-6" fill="#475569" fontSize="9" fontWeight="700" textAnchor="middle">FEED TANK</text>
-            <text x="27.5" y="65" fill="#0369A1" fontSize="8" fontWeight="800" textAnchor="middle">WATER</text>
-            <text x="27.5" y="78" fill="#64748B" fontSize="7" textAnchor="middle" className="numeric-data">25.0 °C</text>
+          {/* S-100 Badge */}
+          <g className="pfd-stream-badge-group" transform="translate(145, 260)" onClick={() => handleStreamClick(streams[0])}>
+            <rect x="-32" y="-12" width="64" height="20" rx="4" className={`pfd-stream-badge ${selectedStream?.id === 'S-100' ? 'active' : ''}`} />
+            <text x="0" y="2" className="pfd-stream-text" textAnchor="middle">S-100: {(streams[0]?.flow_rate || 10.0).toFixed(1)} L/m</text>
+          </g>
+
+          {/* S-101 Badge */}
+          <g className="pfd-stream-badge-group" transform="translate(275, 205)" onClick={() => handleStreamClick(streams[1])}>
+            <rect x="-32" y="-12" width="64" height="20" rx="4" className={`pfd-stream-badge ${selectedStream?.id === 'S-101' ? 'active' : ''}`} />
+            <text x="0" y="2" className="pfd-stream-text" textAnchor="middle">S-101: {(streams[1]?.flow_rate || 10.0).toFixed(1)} L/m</text>
+          </g>
+
+          {/* S-102 Badge */}
+          <g className="pfd-stream-badge-group" transform="translate(490, 190)" onClick={() => handleStreamClick(streams[2])}>
+            <rect x="-32" y="-12" width="64" height="20" rx="4" className={`pfd-stream-badge ${selectedStream?.id === 'S-102' ? 'active' : ''}`} />
+            <text x="0" y="2" className="pfd-stream-text" textAnchor="middle">S-102: {(streams[2]?.temperature || 45.0).toFixed(1)}°C</text>
+          </g>
+
+          {/* S-103 Badge */}
+          <g className="pfd-stream-badge-group" transform="translate(660, 385)" onClick={() => handleStreamClick(streams[3])}>
+            <rect x="-32" y="-12" width="64" height="20" rx="4" className={`pfd-stream-badge ${selectedStream?.id === 'S-103' ? 'active' : ''}`} />
+            <text x="0" y="2" className="pfd-stream-text" textAnchor="middle">S-103: {(streams[3]?.flow_rate || 10.0).toFixed(1)} L/m</text>
+          </g>
+
+          {/* S-104 Badge */}
+          <g className="pfd-stream-badge-group" transform="translate(1015, 75)" onClick={() => handleStreamClick(streams[4])}>
+            <rect x="-32" y="-12" width="64" height="20" rx="4" className={`pfd-stream-badge ${selectedStream?.id === 'S-104' ? 'active' : ''}`} />
+            <text x="0" y="2" className="pfd-stream-text" textAnchor="middle">S-104: {(streams[4]?.flow_rate || 4.5).toFixed(1)} L/m</text>
+          </g>
+
+          {/* S-106 Badge */}
+          <g className="pfd-stream-badge-group" transform="translate(900, 95)" onClick={() => handleStreamClick(streams[6] || streams[0])}>
+            <rect x="-32" y="-12" width="64" height="20" rx="4" className={`pfd-stream-badge ${selectedStream?.id === 'S-106' ? 'active' : ''}`} />
+            <text x="0" y="2" className="pfd-stream-text" textAnchor="middle">S-106: {(streams[6]?.flow_rate || 5.6).toFixed(1)} L/m</text>
+          </g>
+
+          {/* S-105 Badge */}
+          <g className="pfd-stream-badge-group" transform="translate(920, 460)" onClick={() => handleStreamClick(streams[5])}>
+            <rect x="-32" y="-12" width="64" height="20" rx="4" className={`pfd-stream-badge ${selectedStream?.id === 'S-105' ? 'active' : ''}`} />
+            <text x="0" y="2" className="pfd-stream-text" textAnchor="middle">S-105: {(streams[5]?.flow_rate || 5.3).toFixed(1)} L/m</text>
           </g>
 
           {/* ========================================================================= */}
-          {/* UNIT 1: P-101 CENTRIFUGAL FEED PUMP */}
+          {/* EQUIPMENT UNITS (ENGINEERING BODIES WITH CLEAN NAVY OUTLINES)             */}
           {/* ========================================================================= */}
+
+          {/* --- T-100: FEED TANK --- */}
           <g
-            transform="translate(175, 190)"
-            className={`aspen-equipment-node ${selectedEquipment === 'pump' ? 'selected' : ''}`}
-            onClick={() => handleSelect('pump')}
+            className={`pfd-equipment-group ${selectedUnit === 'T-100' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('T-100')}
           >
-            <title>P-101 Centrifugal Feed Pump - Click to inspect & change simulation</title>
-            {/* Selection Aura */}
-            {selectedEquipment === 'pump' && (
-              <circle cx="35" cy="50" r="44" fill="none" stroke="var(--primary-blue)" strokeWidth="2.5" strokeDasharray="4 2" />
-            )}
+            <rect x="50" y="220" width="60" height="90" rx="6" fill="url(#engVesselFill)" stroke="#0f172a" strokeWidth="2" filter="url(#pfd-subtle-shadow)" />
+            <rect x="52" y="250" width="56" height="58" rx="4" fill="url(#liquidFeedGradient)" />
+            <line x1="52" y1="250" x2="108" y2="250" stroke="#0284c7" strokeWidth="1.5" strokeDasharray="2 2" />
+            <path d="M 50 225 Q 80 215 110 225" fill="none" stroke="#0f172a" strokeWidth="1.5" />
+            <path d="M 50 305 Q 80 315 110 305" fill="none" stroke="#0f172a" strokeWidth="1.5" />
+            <rect x="55" y="325" width="50" height="18" rx="3" className="pfd-tag-bg" />
+            <text x="80" y="338" className="pfd-tag-text">T-100</text>
+            <text x="80" y="270" className="pfd-unit-value">75% LVL</text>
+          </g>
 
-            {/* Volute Pump Casing */}
-            <circle cx="35" cy="50" r="32" fill="#FFFFFF" stroke={isPumpAbnormal ? '#EA580C' : '#0F172A'} strokeWidth="2" filter="url(#unit-shadow)" />
-            {/* Impeller Eye */}
-            <circle cx="35" cy="50" r="10" fill={isPumpAbnormal ? '#FFEDD5' : '#F1F5F9'} stroke={isPumpAbnormal ? '#EA580C' : '#475569'} strokeWidth="1.5" />
-            {/* Impeller Blades */}
-            <line x1="35" y1="40" x2="35" y2="60" stroke="#475569" strokeWidth="1.5" />
-            <line x1="25" y1="50" x2="45" y2="50" stroke="#475569" strokeWidth="1.5" />
-            {/* Motor Box */}
-            <rect x="0" y="38" width="16" height="24" rx="2" fill="#F8FAFC" stroke="#475569" strokeWidth="1.2" />
-
-            {/* Status LED dot */}
-            <circle cx="60" cy="24" r="5" fill={isPumpAbnormal ? '#EA580C' : '#10B981'} />
-
-            {/* Tag & Key Readout */}
-            <text x="35" y="-8" fill="#0F172A" fontSize="10" fontWeight="800" textAnchor="middle" className="numeric-data">P-101</text>
-            <text x="35" y="5" fill="#64748B" fontSize="7.5" textAnchor="middle">CENTRIFUGAL PUMP</text>
-            <rect x="-10" y="94" width="90" height="34" rx="4" fill="#FFFFFF" stroke={isPumpAbnormal ? '#FDBA74' : '#E2E8F0'} strokeWidth="1" />
-            <text x="35" y="107" fill="#0F172A" fontSize="8.5" fontWeight="700" textAnchor="middle" className="numeric-data">{Math.round(pump.rpm)} RPM</text>
-            <text x="35" y="120" fill={pump.vibration > 0.20 ? '#DC2626' : '#64748B'} fontSize="7.5" fontWeight="600" textAnchor="middle" className="numeric-data">
-              Vib: {pump.vibration.toFixed(2)} g · {pumpFlow.toFixed(1)} L/m
+          {/* --- P-101: CENTRIFUGAL PUMP --- */}
+          <g
+            className={`pfd-equipment-group ${selectedUnit === 'P-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('P-101')}
+          >
+            {/* Motor block */}
+            <rect x="180" y="285" width="22" height="16" rx="2" fill="#e2e8f0" stroke="#0f172a" strokeWidth="1.5" />
+            {/* Pump Volute Casing */}
+            <circle
+              cx="210"
+              cy="280"
+              r="22"
+              fill="url(#engVesselFill)"
+              stroke={pumpCausal.outlineColor}
+              strokeWidth={selectedUnit === 'P-101' ? '3.5' : '2.5'}
+              filter="url(#pfd-subtle-shadow)"
+            />
+            <g className="pfd-impeller" style={{ transformOrigin: '210px 280px' }}>
+              <line x1="210" y1="264" x2="210" y2="296" stroke="#475569" strokeWidth="2" />
+              <line x1="194" y1="280" x2="226" y2="280" stroke="#475569" strokeWidth="2" />
+              <circle cx="210" cy="280" r="4" fill="#0284c7" />
+            </g>
+            <path d="M 224 266 L 230 260" stroke="#0f172a" strokeWidth="2" />
+            <rect x="185" y="325" width="50" height="18" rx="3" className="pfd-tag-bg" />
+            <text x="210" y="338" className="pfd-tag-text">P-101</text>
+            <text x="210" y="355" className="pfd-unit-stat">
+              {telemetry.pump?.rpm ? `${Math.round(telemetry.pump.rpm)} RPM` : '2900 RPM'}
+            </text>
+            <text x="210" y="367" className="pfd-unit-stat highlight">
+              {telemetry.pump?.flow_rate ? `${telemetry.pump.flow_rate.toFixed(1)} L/m` : '10.0 L/m'}
             </text>
           </g>
 
-          {/* ========================================================================= */}
-          {/* UNIT 2: E-101 SHELL & TUBE HEAT EXCHANGER */}
-          {/* ========================================================================= */}
+          {/* --- E-101: SHELL & TUBE HEAT EXCHANGER --- */}
           <g
-            transform="translate(375, 180)"
-            className={`aspen-equipment-node ${selectedEquipment === 'heat_exchanger' ? 'selected' : ''}`}
-            onClick={() => handleSelect('heat_exchanger')}
+            className={`pfd-equipment-group ${selectedUnit === 'E-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('E-101')}
           >
-            <title>E-101 Shell & Tube Heat Exchanger - Click to inspect & change simulation</title>
-            {/* Selection Aura */}
-            {selectedEquipment === 'heat_exchanger' && (
-              <rect x="-8" y="-4" width="126" height="128" rx="8" fill="none" stroke="var(--primary-blue)" strokeWidth="2.5" strokeDasharray="4 2" />
-            )}
-
-            {/* Shell Body */}
-            <rect x="0" y="8" width="110" height="104" rx="14" fill="#FFFFFF" stroke={isHxAbnormal ? '#EA580C' : '#0F172A'} strokeWidth="2" filter="url(#unit-shadow)" />
-            
-            {/* Tubes / Baffles Inside */}
-            <line x1="20" y1="20" x2="90" y2="20" stroke="#0284C7" strokeWidth="2" strokeDasharray="3 2" />
-            <line x1="20" y1="40" x2="90" y2="40" stroke="#0284C7" strokeWidth="2" strokeDasharray="3 2" />
-            <line x1="20" y1="60" x2="90" y2="60" stroke="#0284C7" strokeWidth="2" strokeDasharray="3 2" />
-            <line x1="20" y1="80" x2="90" y2="80" stroke="#0284C7" strokeWidth="2" strokeDasharray="3 2" />
-            <line x1="20" y1="100" x2="90" y2="100" stroke="#0284C7" strokeWidth="2" strokeDasharray="3 2" />
-
-            {/* Vertical Baffle Plates */}
-            <line x1="42" y1="16" x2="42" y2="80" stroke="#94A3B8" strokeWidth="1.5" />
-            <line x1="68" y1="40" x2="68" y2="104" stroke="#94A3B8" strokeWidth="1.5" />
-
-            {/* Shell Coolant Ports */}
-            <rect x="25" y="0" width="12" height="8" fill="#F1F5F9" stroke="#475569" strokeWidth="1.2" />
-            <rect x="73" y="112" width="12" height="8" fill="#F1F5F9" stroke="#475569" strokeWidth="1.2" />
-
-            {/* Status LED */}
-            <circle cx="98" cy="20" r="5" fill={isHxAbnormal ? '#EA580C' : '#10B981'} />
-
-            {/* Tag & Key Readout */}
-            <text x="55" y="-8" fill="#0F172A" fontSize="10" fontWeight="800" textAnchor="middle" className="numeric-data">E-101</text>
-            <text x="55" y="5" fill="#64748B" fontSize="7.5" textAnchor="middle">HEAT EXCHANGER</text>
-            <rect x="5" y="124" width="100" height="34" rx="4" fill="#FFFFFF" stroke={isHxAbnormal ? '#FDBA74' : '#E2E8F0'} strokeWidth="1" />
-            <text x="55" y="137" fill="#0F172A" fontSize="8.5" fontWeight="700" textAnchor="middle" className="numeric-data">ΔT: {hx.temperature_difference.toFixed(1)} °C</text>
-            <text x="55" y="150" fill={hx.temperature_difference < 5 ? '#DC2626' : '#64748B'} fontSize="7.5" fontWeight="600" textAnchor="middle" className="numeric-data">
-              Tout: {hx.outlet_temperature.toFixed(1)}°C · Eff: {(hx.efficiency ?? 95).toFixed(0)}%
+            <rect
+              x="330"
+              y="185"
+              width="120"
+              height="70"
+              rx="12"
+              fill="url(#engVesselFill)"
+              stroke={exchCausal.outlineColor}
+              strokeWidth={selectedUnit === 'E-101' ? '3.5' : '2.5'}
+              filter="url(#pfd-subtle-shadow)"
+            />
+            {/* Tube Bundle Linework */}
+            <line x1="340" y1="205" x2="440" y2="205" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 2" />
+            <line x1="340" y1="220" x2="440" y2="220" stroke="#0284c7" strokeWidth="2" />
+            <line x1="340" y1="235" x2="440" y2="235" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 2" />
+            {/* Baffles */}
+            <line x1="365" y1="185" x2="365" y2="230" stroke="#64748b" strokeWidth="1.5" />
+            <line x1="405" y1="210" x2="405" y2="255" stroke="#64748b" strokeWidth="1.5" />
+            {/* Channel heads */}
+            <path d="M 330 185 Q 320 220 330 255" fill="none" stroke="#0f172a" strokeWidth="1.5" />
+            <path d="M 450 185 Q 460 220 450 255" fill="none" stroke="#0f172a" strokeWidth="1.5" />
+            <rect x="365" y="325" width="50" height="18" rx="3" className="pfd-tag-bg" />
+            <text x="390" y="338" className="pfd-tag-text">E-101</text>
+            <text x="390" y="355" className="pfd-unit-stat">
+              Tout: {telemetry.heat_exchanger?.temp_out ? `${telemetry.heat_exchanger.temp_out.toFixed(1)}°C` : '45.0°C'}
+            </text>
+            <text x="390" y="367" className="pfd-unit-stat highlight">
+              U: {telemetry.heat_exchanger?.overall_u ? `${telemetry.heat_exchanger.overall_u.toFixed(0)} W/m²K` : '850 W/m²K'}
             </text>
           </g>
 
-          {/* ========================================================================= */}
-          {/* UNIT 3: R-101 CONTINUOUS STIRRED-TANK REACTOR (CSTR) */}
-          {/* ========================================================================= */}
+          {/* --- R-101: CONTINUOUS STIRRED TANK REACTOR (CSTR) --- */}
           <g
-            transform="translate(610, 160)"
-            className={`aspen-equipment-node ${selectedEquipment === 'reactor' ? 'selected' : ''}`}
-            onClick={() => handleSelect('reactor')}
+            className={`pfd-equipment-group ${selectedUnit === 'R-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('R-101')}
           >
-            <title>R-101 CSTR Reactor - Click to inspect & change simulation</title>
-            {/* Selection Aura */}
-            {selectedEquipment === 'reactor' && (
-              <rect x="-8" y="-4" width="131" height="168" rx="8" fill="none" stroke="var(--primary-blue)" strokeWidth="2.5" strokeDasharray="4 2" />
-            )}
-
-            {/* Outer Cooling Jacket */}
-            <path
-              d="M 5 35 L 5 135 A 25 25 0 0 0 110 135 L 110 35"
-              fill={reactor.cooling_status === 1 ? '#E0F2FE' : '#FEE2E2'}
-              stroke={reactor.cooling_status === 1 ? '#38BDF8' : '#EF4444'}
-              strokeWidth="2"
+            {/* Cooling Jacket Outline */}
+            <rect
+              x="520"
+              y="195"
+              width="120"
+              height="155"
+              rx="18"
+              fill="none"
+              stroke="#0284c7"
+              strokeWidth="2.5"
               strokeDasharray="4 2"
             />
-
-            {/* Reactor Vessel Body */}
-            <path
-              d="M 15 25 L 15 125 A 20 20 0 0 0 100 125 L 100 25 A 20 20 0 0 0 15 25 Z"
-              fill="#FFFFFF"
-              stroke={isReactorCritical ? '#DC2626' : '#0F172A'}
-              strokeWidth="2"
-              filter="url(#unit-shadow)"
+            {/* Main Vessel Body */}
+            <rect
+              x="530"
+              y="180"
+              width="100"
+              height="180"
+              rx="16"
+              fill="url(#engVesselFill)"
+              stroke={reactCausal.outlineColor}
+              strokeWidth={selectedUnit === 'R-101' ? '3.5' : '2.5'}
+              filter="url(#pfd-subtle-shadow)"
             />
-
-            {/* Liquid Level */}
-            <path
-              d="M 16 75 Q 57.5 80 99 75 L 99 125 A 20 20 0 0 1 16 125 Z"
-              fill={isReactorCritical ? '#FEE2E2' : '#E0E7FF'}
-              opacity="0.75"
-            />
+            {/* Liquid Holdup */}
+            <rect x="532" y="240" width="96" height="116" rx="10" fill="url(#liquidReactorGradient)" />
+            <line x1="532" y1="240" x2="628" y2="240" stroke="#8b5cf6" strokeWidth="1.5" strokeDasharray="3 2" />
 
             {/* Agitator Motor */}
-            <rect x="47.5" y="0" width="20" height="15" rx="2" fill="#334155" stroke="#0F172A" strokeWidth="1" />
+            <rect x="570" y="150" width="20" height="22" rx="3" fill="#e2e8f0" stroke="#0f172a" strokeWidth="1.5" />
             {/* Agitator Shaft */}
-            <line x1="57.5" y1="15" x2="57.5" y2="120" stroke="#334155" strokeWidth="2.5" />
-            {/* Dual Rushton Turbine Impellers */}
-            <rect x="35" y="70" width="45" height="5" rx="1" fill="#475569" />
-            <rect x="35" y="105" width="45" height="5" rx="1" fill="#475569" />
+            <line x1="580" y1="172" x2="580" y2="335" stroke="#334155" strokeWidth="2.5" />
+            {/* Top Impeller Blades */}
+            <g className="pfd-impeller-blade" style={{ transformOrigin: '580px 270px' }}>
+              <line x1="555" y1="270" x2="605" y2="270" stroke="#334155" strokeWidth="3" />
+              <line x1="555" y1="265" x2="555" y2="275" stroke="#334155" strokeWidth="3" />
+              <line x1="605" y1="265" x2="605" y2="275" stroke="#334155" strokeWidth="3" />
+            </g>
+            {/* Bottom Impeller Blades */}
+            <g className="pfd-impeller-blade" style={{ transformOrigin: '580px 320px' }}>
+              <line x1="555" y1="320" x2="605" y2="320" stroke="#334155" strokeWidth="3" />
+              <line x1="555" y1="315" x2="555" y2="325" stroke="#334155" strokeWidth="3" />
+              <line x1="605" y1="315" x2="605" y2="325" stroke="#334155" strokeWidth="3" />
+            </g>
 
-            {/* Status LED */}
-            <circle cx="95" cy="20" r="5" fill={isReactorCritical ? '#DC2626' : '#10B981'} />
+            {/* Thermowell Sensor Probe */}
+            <line x1="615" y1="210" x2="615" y2="300" stroke="#e11d48" strokeWidth="1.5" />
+            <circle cx="615" cy="300" r="2.5" fill="#e11d48" />
 
-            {/* Tag & Key Readout */}
-            <text x="57.5" y="-8" fill="#0F172A" fontSize="10" fontWeight="800" textAnchor="middle" className="numeric-data">R-101</text>
-            <text x="57.5" y="5" fill="#64748B" fontSize="7.5" textAnchor="middle">CSTR REACTOR</text>
-            <rect x="5" y="164" width="105" height="34" rx="4" fill="#FFFFFF" stroke={isReactorCritical ? '#FCA5A5' : '#E2E8F0'} strokeWidth="1" />
-            <text x="57.5" y="177" fill={reactor.temperature > 80 ? '#DC2626' : '#0F172A'} fontSize="8.5" fontWeight="700" textAnchor="middle" className="numeric-data">
-              {reactor.temperature.toFixed(1)} °C · {reactor.pressure.toFixed(2)} bar
+            <rect x="555" y="380" width="50" height="18" rx="3" className="pfd-tag-bg" />
+            <text x="580" y="393" className="pfd-tag-text">R-101</text>
+            <text x="580" y="415" className="pfd-unit-stat">
+              T: {telemetry.reactor?.temperature ? `${telemetry.reactor.temperature.toFixed(1)}°C` : '85.0°C'}
             </text>
-            <text x="57.5" y="190" fill={reactor.cooling_status === 0 ? '#DC2626' : '#64748B'} fontSize="7.5" fontWeight="600" textAnchor="middle" className="numeric-data">
-              Cooling: {reactor.cooling_status === 1 ? 'ON' : 'OFF (TRIPPED)'} · {Math.round(reactor.agitator_speed)} RPM
+            <text x="580" y="427" className="pfd-unit-stat highlight">
+              Conv: {telemetry.reactor?.conversion !== undefined ? `${(telemetry.reactor.conversion * 100).toFixed(1)}%` : '78.2%'}
             </text>
           </g>
 
-          {/* ========================================================================= */}
-          {/* UNIT 4: D-101 DISTILLATION COLUMN (FRACTIONATOR) */}
-          {/* ========================================================================= */}
+          {/* --- D-101: BINARY DISTILLATION COLUMN --- */}
           <g
-            transform="translate(850, 90)"
-            className={`aspen-equipment-node ${selectedEquipment === 'distillation' ? 'selected' : ''}`}
-            onClick={() => handleSelect('distillation')}
+            className={`pfd-equipment-group ${selectedUnit === 'D-101' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('D-101')}
           >
-            <title>D-101 Distillation Column - Click to inspect & change simulation</title>
-            {/* Selection Aura */}
-            {selectedEquipment === 'distillation' && (
-              <rect x="-8" y="-4" width="156" height="308" rx="8" fill="none" stroke="var(--primary-blue)" strokeWidth="2.5" strokeDasharray="4 2" />
-            )}
+            {/* Column Vessel */}
+            <rect
+              x="760"
+              y="80"
+              width="80"
+              height="350"
+              rx="18"
+              fill="url(#engVesselFill)"
+              stroke={distCausal.outlineColor}
+              strokeWidth={selectedUnit === 'D-101' ? '3.5' : '2.5'}
+              filter="url(#pfd-subtle-shadow)"
+            />
 
-            {/* Tall Cylindrical Column Body */}
-            <rect x="35" y="20" width="70" height="260" rx="20" fill="#FFFFFF" stroke={isDistAbnormal ? '#EA580C' : '#0F172A'} strokeWidth="2" filter="url(#unit-shadow)" />
+            {/* Internal Sieve Trays / Downcomers */}
+            {[130, 175, 220, 265, 310, 355].map((y, idx) => (
+              <g key={idx}>
+                <line
+                  x1={idx % 2 === 0 ? "765" : "775"}
+                  y1={y}
+                  x2={idx % 2 === 0 ? "825" : "835"}
+                  y2={y}
+                  stroke="#64748b"
+                  strokeWidth="1.5"
+                  strokeDasharray="2 2"
+                />
+                <line
+                  x1={idx % 2 === 0 ? "825" : "775"}
+                  y1={y}
+                  x2={idx % 2 === 0 ? "825" : "775"}
+                  y2={y + 20}
+                  stroke="#94a3b8"
+                  strokeWidth="1.5"
+                />
+              </g>
+            ))}
 
-            {/* Internal Fractionation Sieve Trays */}
-            <line x1="45" y1="60" x2="95" y2="60" stroke="#94A3B8" strokeWidth="2" strokeDasharray="2 2" />
-            <line x1="45" y1="95" x2="95" y2="95" stroke="#94A3B8" strokeWidth="2" strokeDasharray="2 2" />
-            <line x1="45" y1="130" x2="95" y2="130" stroke="#94A3B8" strokeWidth="2" strokeDasharray="2 2" />
-            <line x1="45" y1="165" x2="95" y2="165" stroke="#94A3B8" strokeWidth="2" strokeDasharray="2 2" />
-            <line x1="45" y1="200" x2="95" y2="200" stroke="#94A3B8" strokeWidth="2" strokeDasharray="2 2" />
-            <line x1="45" y1="235" x2="95" y2="235" stroke="#94A3B8" strokeWidth="2" strokeDasharray="2 2" />
+            {/* Feed Tray Nozzle */}
+            <circle cx="760" cy="260" r="3.5" fill="#0284c7" />
+            <text x="750" y="263" fill="#0284c7" fontSize="8" fontWeight="700" textAnchor="end" fontFamily="monospace">FEED</text>
 
-            {/* Overhead Condenser Symbol */}
-            <rect x="95" y="-15" width="30" height="20" rx="3" fill="#E0F2FE" stroke="#0284C7" strokeWidth="1.2" />
-            <text x="110" y="-2" fill="#0369A1" fontSize="7" fontWeight="700" textAnchor="middle">COND</text>
+            {/* Sump Liquid Holdup */}
+            <rect x="762" y="380" width="76" height="46" rx="10" fill="url(#liquidBottomsGradient)" />
+            <line x1="762" y1="380" x2="838" y2="380" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="3 2" />
 
-            {/* Status LED */}
-            <circle cx="95" cy="30" r="5" fill={isDistAbnormal ? '#EA580C' : '#10B981'} />
+            {/* Overhead Condenser C-101 */}
+            <g transform="translate(900, 35)">
+              <rect x="0" y="0" width="40" height="30" rx="4" fill="url(#engVesselFill)" stroke="#0284c7" strokeWidth="1.5" />
+              <line x1="5" y1="15" x2="35" y2="15" stroke="#0284c7" strokeWidth="1.5" strokeDasharray="2 2" />
+              <text x="20" y="20" fill="#0f172a" fontSize="8" fontWeight="700" textAnchor="middle" fontFamily="monospace">C-101</text>
+            </g>
 
-            {/* Tag & Key Readout */}
-            <text x="70" y="-8" fill="#0F172A" fontSize="10" fontWeight="800" textAnchor="middle" className="numeric-data">D-101</text>
-            <text x="70" y="6" fill="#64748B" fontSize="7.5" textAnchor="middle">FRACTIONATOR</text>
-            <rect x="15" y="304" width="110" height="34" rx="4" fill="#FFFFFF" stroke={isDistAbnormal ? '#FDBA74' : '#E2E8F0'} strokeWidth="1" />
-            <text x="70" y="317" fill={dist.top_temperature > 78 ? '#DC2626' : '#0F172A'} fontSize="8.5" fontWeight="700" textAnchor="middle" className="numeric-data">
-              Top: {dist.top_temperature.toFixed(1)} °C · Reflux: {dist.reflux_ratio.toFixed(2)}
+            {/* Reflux Accumulator */}
+            <g transform="translate(955, 75)">
+              <rect x="0" y="0" width="30" height="30" rx="6" fill="url(#engVesselFill)" stroke="#0f172a" strokeWidth="1.5" />
+              <rect x="2" y="15" width="26" height="13" rx="3" fill="url(#liquidDistillateGradient)" />
+              <text x="15" y="12" fill="#0f172a" fontSize="7" fontWeight="700" textAnchor="middle" fontFamily="monospace">ACC</text>
+            </g>
+
+            {/* Reboiler E-102 Kettle */}
+            <g transform="translate(870, 430)">
+              <circle cx="20" cy="20" r="18" fill="url(#engVesselFill)" stroke="#f59e0b" strokeWidth="1.5" />
+              <path d="M 8 20 Q 20 8 32 20 Q 20 32 8 20" fill="none" stroke="#f59e0b" strokeWidth="1.5" />
+              <text x="20" y="23" fill="#0f172a" fontSize="8" fontWeight="700" textAnchor="middle" fontFamily="monospace">E-102</text>
+            </g>
+
+            <rect x="775" y="440" width="50" height="18" rx="3" className="pfd-tag-bg" />
+            <text x="800" y="453" className="pfd-tag-text">D-101</text>
+            <text x="800" y="472" className="pfd-unit-stat">
+              Purity: {telemetry.distillation?.separation_purity ? `${(telemetry.distillation.separation_purity * 100).toFixed(1)}%` : '98.5%'}
             </text>
-            <text x="70" y="330" fill="#64748B" fontSize="7.5" fontWeight="600" textAnchor="middle" className="numeric-data">
-              P: {dist.pressure.toFixed(2)} bar · Bottom: {dist.bottom_temperature.toFixed(1)}°C
+            <text x="800" y="484" className="pfd-unit-stat highlight">
+              P: {telemetry.distillation?.column_pressure ? `${telemetry.distillation.column_pressure.toFixed(2)} bar` : '1.05 bar'}
             </text>
           </g>
 
-          {/* ========================================================================= */}
-          {/* PRODUCT STORAGE TANKS (TOP & BOTTOM PRODUCTS) */}
-          {/* ========================================================================= */}
-          {/* Top Distillate Product Receiver Tank Symbol */}
+          {/* --- T-104: DISTILLATE STORAGE TANK --- */}
           <g
-            transform="translate(1020, 40)"
-            className={`aspen-equipment-node ${selectedEquipment === 'top_product' ? 'selected' : ''}`}
-            onClick={() => handleSelect('top_product')}
+            className={`pfd-equipment-group ${selectedUnit === 'T-104' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('T-104')}
           >
-            <title>Top Distillate Product Tank - Click to inspect</title>
-            <rect x="0" y="0" width="45" height="40" rx="4" fill="#F8FAFC" stroke="#2563EB" strokeWidth="1.5" filter="url(#unit-shadow)" />
-            <path d="M 0 15 Q 22.5 18 45 15 L 45 40 L 0 40 Z" fill="#DBEAFE" opacity="0.7" />
-            <text x="22.5" y="28" fill="#1E40AF" fontSize="6.5" fontWeight="800" textAnchor="middle">DISTILLATE</text>
+            <rect x="1030" y="120" width="50" height="70" rx="5" fill="url(#engVesselFill)" stroke="#0f172a" strokeWidth="1.5" filter="url(#pfd-subtle-shadow)" />
+            <rect x="1032" y="145" width="46" height="43" rx="3" fill="url(#liquidDistillateGradient)" />
+            <rect x="1030" y="200" width="50" height="16" rx="3" className="pfd-tag-bg" />
+            <text x="1055" y="212" className="pfd-tag-text">T-104</text>
+            <text x="1055" y="170" className="pfd-unit-value">PRODUCT</text>
           </g>
 
-          {/* Bottoms Product Storage Tank Symbol */}
+          {/* --- T-105: BOTTOMS STORAGE TANK --- */}
           <g
-            transform="translate(1020, 410)"
-            className={`aspen-equipment-node ${selectedEquipment === 'bottom_product' ? 'selected' : ''}`}
-            onClick={() => handleSelect('bottom_product')}
+            className={`pfd-equipment-group ${selectedUnit === 'T-105' ? 'selected' : ''}`}
+            onClick={() => handleUnitClick('T-105')}
           >
-            <title>Bottoms Storage Tank - Click to inspect</title>
-            <rect x="0" y="0" width="45" height="40" rx="4" fill="#F8FAFC" stroke="#059669" strokeWidth="1.5" filter="url(#unit-shadow)" />
-            <path d="M 0 15 Q 22.5 18 45 15 L 45 40 L 0 40 Z" fill="#D1FAE5" opacity="0.7" />
-            <text x="22.5" y="28" fill="#065F46" fontSize="6.5" fontWeight="800" textAnchor="middle">BOTTOMS</text>
+            <rect x="1030" y="350" width="50" height="70" rx="5" fill="url(#engVesselFill)" stroke="#0f172a" strokeWidth="1.5" filter="url(#pfd-subtle-shadow)" />
+            <rect x="1032" y="375" width="46" height="43" rx="3" fill="url(#liquidBottomsGradient)" />
+            <rect x="1030" y="430" width="50" height="16" rx="3" className="pfd-tag-bg" />
+            <text x="1055" y="442" className="pfd-tag-text">T-105</text>
+            <text x="1055" y="400" className="pfd-unit-value">HEAVY</text>
           </g>
-
         </svg>
       </div>
 
-      {/* ========================================================================= */}
-      {/* 5. COMPACT INTEGRATED EQUIPMENT / STREAM DETAIL INSPECTOR */}
-      {/* ========================================================================= */}
+      {/* 4. Deep Interactive Inspector Panel */}
       <div className="pfd-inspector-container">
-        {/* INSPECTOR HEADER */}
         <div className="pfd-inspector-header">
-          <div className="pfd-inspector-identity">
-            <span className="pfd-inspector-tag">
-              {selectedEquipment === 'pump' && 'P-101'}
-              {selectedEquipment === 'heat_exchanger' && 'E-101'}
-              {selectedEquipment === 'reactor' && 'R-101'}
-              {selectedEquipment === 'distillation' && 'D-101'}
-              {selectedEquipment === 'feed_tank' && 'T-100'}
-              {selectedEquipment === 'top_product' && 'T-105'}
-              {selectedEquipment === 'bottom_product' && 'T-106'}
-              {isStream && `STR-${selectedEquipment.replace('stream_', '0')}`}
-            </span>
-            <div>
-              <h4 className="pfd-inspector-title">
-                {selectedEquipment === 'pump' && 'P-101 — CENTRIFUGAL FEED PUMP'}
-                {selectedEquipment === 'heat_exchanger' && 'E-101 — SHELL & TUBE HEAT EXCHANGER'}
-                {selectedEquipment === 'reactor' && 'R-101 — CONTINUOUS STIRRED-TANK REACTOR (CSTR)'}
-                {selectedEquipment === 'distillation' && 'D-101 — BINARY FRACTIONATION COLUMN'}
-                {selectedEquipment === 'feed_tank' && 'FEED TANK — RAW WATER MAKEUP RESERVOIR'}
-                {selectedEquipment === 'top_product' && 'TOP DISTILLATE PRODUCT — OVERHEAD RECEIVER'}
-                {selectedEquipment === 'bottom_product' && 'BOTTOMS PRODUCT — HEAVY FRACTION STORAGE'}
-                {selectedEquipment === 'stream_1' && 'PROCESS STREAM 01 — RAW WATER INLET FEED'}
-                {selectedEquipment === 'stream_2' && 'PROCESS STREAM 02 — P-101 PUMP DISCHARGE'}
-                {selectedEquipment === 'stream_3' && 'PROCESS STREAM 03 — E-101 EXCHANGER EFFLUENT'}
-                {selectedEquipment === 'stream_4' && 'PROCESS STREAM 04 — R-101 REACTOR EFFLUENT'}
-                {selectedEquipment === 'stream_5' && 'PROCESS STREAM 05 — D-101 OVERHEAD & REFLUX'}
-                {selectedEquipment === 'stream_6' && 'PROCESS STREAM 06 — D-101 BOTTOMS DISCHARGE'}
-              </h4>
-              <p className="pfd-inspector-subtitle">
-                {isStream ? 'Interactive Hydraulic Interconnect Stream' : 'Coupled Aspen PFD Process Unit · Live Digital Twin Telemetry'}
-              </p>
+          <div className="flex items-center gap-2">
+            <button
+              className={`pfd-tab-btn ${activeTab === 'equipment' ? 'active' : ''}`}
+              onClick={() => setActiveTab('equipment')}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              Equipment Telemetry
+            </button>
+            <button
+              className={`pfd-tab-btn ${activeTab === 'streams' ? 'active' : ''}`}
+              onClick={() => setActiveTab('streams')}
+            >
+              <Droplet className="w-3.5 h-3.5" />
+              Process Streams (S-100 to S-106)
+            </button>
+            <button
+              className={`pfd-tab-btn ${activeTab === 'controls' ? 'active' : ''}`}
+              onClick={() => setActiveTab('controls')}
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              Causal Process Actuators
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {onAskAiAbout && selectedUnit && (
+              <button
+                className="panel-ask-ai-btn"
+                onClick={handleAskAi}
+                title="Ask AI Copilot about this equipment unit"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                Ask AI Copilot ({selectedUnit})
+              </button>
+            )}
+
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span>Selected:</span>
+              <span className="pfd-target-pill">
+                {selectedStream ? `Stream ${selectedStream.id}` : selectedUnit ? `Unit ${selectedUnit}` : 'None'}
+              </span>
             </div>
           </div>
-
-          <div className="pfd-inspector-badges">
-            <span className={`pfd-source-badge ${state.equipment[selectedEquipment as keyof typeof state.equipment]?.source === 'real' ? 'real' : ''}`}>
-              {state.equipment[selectedEquipment as keyof typeof state.equipment]?.source === 'real' ? 'REAL SENSOR DATA (ESP32)' : 'SIMULATION / DIGITAL TWIN'}
-            </span>
-            
-            {/* Status Pill */}
-            {selectedEquipment === 'pump' && (
-              <span className={`pfd-status-pill ${isPumpAbnormal ? 'warning' : 'healthy'}`}>
-                {isPumpAbnormal ? '● EARLY DEGRADATION' : '● HEALTHY'}
-              </span>
-            )}
-            {selectedEquipment === 'heat_exchanger' && (
-              <span className={`pfd-status-pill ${isHxAbnormal ? 'warning' : 'healthy'}`}>
-                {isHxAbnormal ? '● FOULING DEVIATION' : '● HEALTHY'}
-              </span>
-            )}
-            {selectedEquipment === 'reactor' && (
-              <span className={`pfd-status-pill ${isReactorCritical ? 'critical' : 'healthy'}`}>
-                {isReactorCritical ? '● RUNAWAY RISK / CRITICAL' : '● HEALTHY'}
-              </span>
-            )}
-            {selectedEquipment === 'distillation' && (
-              <span className={`pfd-status-pill ${isDistAbnormal ? 'warning' : 'healthy'}`}>
-                {isDistAbnormal ? '● REFLUX ANOMALY' : '● HEALTHY'}
-              </span>
-            )}
-            {(isStream || isTank) && (
-              <span className="pfd-status-pill healthy">● NOMINAL FLOW</span>
-            )}
-
-            {/* Causal Role Pill */}
-            <span className="pfd-role-pill">
-              {selectedEquipment === 'pump' && (isPumpAbnormal ? 'PRIMARY FAULT' : 'PRIMARY SOURCE')}
-              {selectedEquipment === 'heat_exchanger' && (isHxAbnormal ? 'PRIMARY FAULT' : isPumpAbnormal ? 'DOWNSTREAM IMPACT' : 'NOMINAL')}
-              {selectedEquipment === 'reactor' && (isReactorCritical ? 'PRIMARY FAULT' : isPumpAbnormal ? 'DOWNSTREAM IMPACT' : 'NOMINAL')}
-              {selectedEquipment === 'distillation' && (isDistAbnormal ? 'PRIMARY FAULT' : isPumpAbnormal ? 'DOWNSTREAM IMPACT' : 'NOMINAL')}
-              {isStream && 'HYDRAULIC STREAM'}
-              {isTank && 'STORAGE UNIT'}
-            </span>
-          </div>
         </div>
 
-        {/* CAUSAL TRACE BREADCRUMB BAR */}
-        <div className="pfd-causal-trace-bar">
-          <div className="pfd-causal-nodes">
-            <span className="pfd-causal-node upstream">
-              UPSTREAM: {selectedEquipment === 'pump' ? 'Feed Tank' : selectedEquipment === 'heat_exchanger' ? 'P-101 Pump' : selectedEquipment === 'reactor' ? 'E-101 Exchanger' : selectedEquipment === 'distillation' ? 'R-101 Reactor' : isStream ? (streams[selectedEquipment as keyof typeof streams]?.from || 'Upstream') : 'Source'}
-            </span>
-            <ArrowRight size={11} className="prop-arrow" />
-            <span className="pfd-causal-node current">
-              SELECTED: {selectedEquipment.toUpperCase().replace('_', ' ')}
-            </span>
-            <ArrowRight size={11} className="prop-arrow" />
-            <span className="pfd-causal-node downstream">
-              DOWNSTREAM: {selectedEquipment === 'pump' ? 'E-101 Exchanger' : selectedEquipment === 'heat_exchanger' ? 'R-101 Reactor' : selectedEquipment === 'reactor' ? 'D-101 Column' : selectedEquipment === 'distillation' ? 'Top/Bottom Products' : isStream ? (streams[selectedEquipment as keyof typeof streams]?.to || 'Downstream') : 'Destination'}
-            </span>
-          </div>
-
-          <div className="pfd-causal-explanation">
-            <Info size={12} color="var(--primary-blue)" />
-            {selectedEquipment === 'pump' && (
-              <span><strong>CAUSE:</strong> Pump speed sets system mass flow. <strong>EFFECT:</strong> Hydraulic throughput propagates through E-101, R-101, and D-101.</span>
-            )}
-            {selectedEquipment === 'heat_exchanger' && (
-              <span>{isPumpAbnormal ? 'CAUSE: Upstream P-101 flow drop. EFFECT: Increased thermal residence time and lower mass flow.' : 'CAUSE: Tube heat transfer. EFFECT: Delivers preheated effluent to reactor R-101.'}</span>
-            )}
-            {selectedEquipment === 'reactor' && (
-              <span>{isReactorCritical ? 'PRIMARY EVENT: Jacketed cooling deficit causes exothermic temperature rise.' : isPumpAbnormal ? 'CAUSE: Lower feed flow from P-101/E-101 train. EFFECT: Extended conversion residence time.' : 'Continuous chemical conversion vessel with dual-turbine agitation.'}</span>
-            )}
-            {selectedEquipment === 'distillation' && (
-              <span>{isDistAbnormal ? 'PRIMARY EVENT: Reflux reduction leads to loss of overhead binary separation.' : isPumpAbnormal ? 'CAUSE: Reduced inlet boil-up feed. EFFECT: Lower distillate and bottoms production rates.' : 'Continuous vapor-liquid equilibrium fractionation.'}</span>
-            )}
-            {isStream && (
-              <span><strong>LIVE STREAM:</strong> Real-time flowrate, temperature, and line pressure derived from backend process graph.</span>
-            )}
-            {isTank && (
-              <span><strong>STORAGE UNIT:</strong> Boundary storage inventory and product collection vessel.</span>
-            )}
-          </div>
-        </div>
-
-        {/* INSPECTOR MAIN CONTENT BODY */}
         <div className="pfd-inspector-body">
-          {/* LEFT: METRICS GRID VS BASELINE */}
-          <div>
-            <div className="pfd-metrics-grid">
-              {/* PUMP METRICS */}
-              {selectedEquipment === 'pump' && (
-                <>
-                  <div className={`pfd-metric-card ${pump.rpm < 2000 ? 'warn' : ''}`}>
-                    <span className="pfd-metric-label">Impeller Speed</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{Math.round(pump.rpm)} RPM</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {pump.rpm < 2400 ? <TrendingDown size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                        {(((pump.rpm - 2450) / 2450) * 100).toFixed(0)}%
-                      </span>
+          {/* TAB 1: EQUIPMENT DETAIL */}
+          {activeTab === 'equipment' && (
+            <div className="pfd-tab-content">
+              {selectedUnit ? (
+                <div>
+                  {/* Equipment Header with Causal Role Tag */}
+                  <div className="pfd-equipment-banner">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="pfd-equipment-title">
+                          {selectedUnit === 'P-101' && 'P-101: Centrifugal Feed Pump'}
+                          {selectedUnit === 'E-101' && 'E-101: Shell & Tube Pre-Heater'}
+                          {selectedUnit === 'R-101' && 'R-101: Continuous Stirred Tank Reactor (CSTR)'}
+                          {selectedUnit === 'D-101' && 'D-101: Binary Distillation Column'}
+                          {selectedUnit === 'T-100' && 'T-100: Raw Feed Storage Tank'}
+                          {selectedUnit === 'T-104' && 'T-104: Distillate Product Tank'}
+                          {selectedUnit === 'T-105' && 'T-105: Bottoms Heavy Residue Tank'}
+                        </h3>
+                        {(() => {
+                          const causal = getCausalRole(selectedUnit);
+                          return (
+                            <span className={`prop-tag ${causal.badgeClass}`}>
+                              {causal.role}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      <p className="pfd-causal-desc">{getCausalRole(selectedUnit).desc}</p>
                     </div>
-                    <span className="pfd-metric-baseline">Baseline: 2450 RPM</span>
+
+                    {/* Topology Connectivity */}
+                    <div className="pfd-topology-card">
+                      <div className="pfd-topology-step">
+                        <span className="pfd-topology-label">Upstream</span>
+                        <span className="pfd-topology-value">{currentTopology?.upstream || 'None (Source)'}</span>
+                      </div>
+                      <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
+                      <div className="pfd-topology-step highlight">
+                        <span className="pfd-topology-label">Active Unit</span>
+                        <span className="pfd-topology-value">{selectedUnit}</span>
+                      </div>
+                      <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
+                      <div className="pfd-topology-step">
+                        <span className="pfd-topology-label">Downstream</span>
+                        <span className="pfd-topology-value">{currentTopology?.downstream || 'None (Sink)'}</span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="pfd-metric-card highlight">
-                    <span className="pfd-metric-label">Pump Flow</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{pumpFlow.toFixed(1)} L/min</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {pumpFlow < 9.5 ? <TrendingDown size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                        {(((pumpFlow - 10.0) / 10.0) * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 10.0 L/min</span>
-                  </div>
+                  {/* Calculated Properties Grid */}
+                  <div className="pfd-props-grid">
+                    {selectedUnit === 'P-101' && (
+                      <>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Impeller Speed (RPM)</span>
+                          <span className="pfd-prop-val mono">{telemetry.pump?.rpm ? Math.round(telemetry.pump.rpm) : 2900}</span>
+                          <span className="pfd-prop-baseline">Baseline: 2900 RPM</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Discharge Flow Rate</span>
+                          <span className="pfd-prop-val mono">{telemetry.pump?.flow_rate ? `${telemetry.pump.flow_rate.toFixed(2)} L/min` : '10.00 L/min'}</span>
+                          <span className="pfd-prop-baseline">Design: 10.00 L/min</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Developed Head (H)</span>
+                          <span className="pfd-prop-val mono">{telemetry.pump?.head ? `${telemetry.pump.head.toFixed(2)} m` : '24.50 m'}</span>
+                          <span className="pfd-prop-baseline">Design: 25.00 m</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Shaft Power</span>
+                          <span className="pfd-prop-val mono">{telemetry.pump?.power_kw ? `${telemetry.pump.power_kw.toFixed(2)} kW` : '1.45 kW'}</span>
+                          <span className="pfd-prop-baseline">Nominal: 1.45 kW</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Hydraulic Efficiency</span>
+                          <span className="pfd-prop-val mono">{telemetry.pump?.efficiency ? `${(telemetry.pump.efficiency * 100).toFixed(1)}%` : '85.0%'}</span>
+                          <span className="pfd-prop-baseline">BEP: 85.0%</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Vibration FFT Peak</span>
+                          <span className="pfd-prop-val mono">{telemetry.pump?.vibration ? `${telemetry.pump.vibration.toFixed(2)} mm/s` : '1.20 mm/s'}</span>
+                          <span className="pfd-prop-baseline">ISO Limit: 2.80 mm/s</span>
+                        </div>
+                      </>
+                    )}
 
-                  <div className={`pfd-metric-card ${pump.vibration > 0.20 ? 'alert' : ''}`}>
-                    <span className="pfd-metric-label">Vibration (RMS)</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{pump.vibration.toFixed(2)} g</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {pump.vibration > 0.15 ? <TrendingUp size={11} color="#DC2626" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 0.08 g</span>
-                  </div>
+                    {selectedUnit === 'E-101' && (
+                      <>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Feed Outlet Temp (Tout)</span>
+                          <span className="pfd-prop-val mono">{telemetry.heat_exchanger?.temp_out ? `${telemetry.heat_exchanger.temp_out.toFixed(1)} °C` : '45.0 °C'}</span>
+                          <span className="pfd-prop-baseline">Target Setpoint: 45.0 °C</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Overall Coeff (U)</span>
+                          <span className="pfd-prop-val mono">{telemetry.heat_exchanger?.overall_u ? `${telemetry.heat_exchanger.overall_u.toFixed(1)} W/m²K` : '850.0 W/m²K'}</span>
+                          <span className="pfd-prop-baseline">Clean U: 850 W/m²K</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Thermal Duty (Q)</span>
+                          <span className="pfd-prop-val mono">{telemetry.heat_exchanger?.heat_duty ? `${telemetry.heat_exchanger.heat_duty.toFixed(2)} kW` : '13.95 kW'}</span>
+                          <span className="pfd-prop-baseline">Design Duty: 14.0 kW</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Fouling Resistance (Rf)</span>
+                          <span className="pfd-prop-val mono">{telemetry.heat_exchanger?.fouling_factor ? `${(telemetry.heat_exchanger.fouling_factor * 1000).toFixed(3)} m²K/kW` : '0.000 m²K/kW'}</span>
+                          <span className="pfd-prop-baseline">TEMA Max: 0.150 m²K/kW</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Tube Delta P</span>
+                          <span className="pfd-prop-val mono">{telemetry.heat_exchanger?.delta_p ? `${telemetry.heat_exchanger.delta_p.toFixed(3)} bar` : '0.100 bar'}</span>
+                          <span className="pfd-prop-baseline">Nominal: 0.100 bar</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Thermal Health Condition</span>
+                          <span className="pfd-prop-val mono">
+                            {typeof telemetry.heat_exchanger?.thermal_condition === 'number'
+                              ? `${(Number(telemetry.heat_exchanger.thermal_condition) * 100).toFixed(1)}%`
+                              : String(telemetry.heat_exchanger?.thermal_condition || 'Clean (100%)').toUpperCase()}
+                          </span>
+                          <span className="pfd-prop-baseline">Threshold: 70.0% Clean</span>
+                        </div>
+                      </>
+                    )}
 
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Discharge Pressure</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{(pump.pressure ?? 2.80).toFixed(2)} bar</span>
-                      <span className="pfd-metric-trend numeric-data">→ Stable</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 2.80 bar</span>
-                  </div>
-                </>
-              )}
+                    {selectedUnit === 'R-101' && (
+                      <>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Reactor Core Temp</span>
+                          <span className="pfd-prop-val mono">{telemetry.reactor?.temperature ? `${telemetry.reactor.temperature.toFixed(1)} °C` : '85.0 °C'}</span>
+                          <span className="pfd-prop-baseline">Setpoint: 85.0 °C</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Chemical Conversion (X_A)</span>
+                          <span className="pfd-prop-val mono">{telemetry.reactor?.conversion !== undefined ? `${(telemetry.reactor.conversion * 100).toFixed(2)}%` : '78.20%'}</span>
+                          <span className="pfd-prop-baseline">Design: 78.00%</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Mean Residence Time (tau)</span>
+                          <span className="pfd-prop-val mono">{telemetry.reactor?.residence_time ? `${telemetry.reactor.residence_time.toFixed(1)} min` : '50.0 min'}</span>
+                          <span className="pfd-prop-baseline">Design: 50.0 min</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Jacket Heat Removal</span>
+                          <span className="pfd-prop-val mono">{telemetry.reactor?.heat_removal ? `${telemetry.reactor.heat_removal.toFixed(2)} kW` : '12.40 kW'}</span>
+                          <span className="pfd-prop-baseline">Duty Match: 12.4 kW</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Exothermic Heat Gen</span>
+                          <span className="pfd-prop-val mono">{telemetry.reactor?.heat_generation ? `${telemetry.reactor.heat_generation.toFixed(2)} kW` : '12.40 kW'}</span>
+                          <span className="pfd-prop-baseline">Nominal: 12.4 kW</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Cooling Jacket Flow</span>
+                          <span className="pfd-prop-val mono">{telemetry.reactor?.cooling_flow ? `${telemetry.reactor.cooling_flow.toFixed(1)} L/min` : '15.0 L/min'}</span>
+                          <span className="pfd-prop-baseline">Nominal: 15.0 L/min</span>
+                        </div>
+                      </>
+                    )}
 
-              {/* HEAT EXCHANGER METRICS */}
-              {selectedEquipment === 'heat_exchanger' && (
-                <>
-                  <div className="pfd-metric-card highlight">
-                    <span className="pfd-metric-label">Inlet Feed Flow</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{(hx.flow ?? pumpFlow).toFixed(1)} L/min</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {(hx.flow ?? pumpFlow) < 9.5 ? <TrendingDown size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 10.0 L/min</span>
-                  </div>
+                    {selectedUnit === 'D-101' && (
+                      <>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Distillate Purity (x_D)</span>
+                          <span className="pfd-prop-val mono">{telemetry.distillation?.separation_purity ? `${(telemetry.distillation.separation_purity * 100).toFixed(2)}%` : '98.50%'}</span>
+                          <span className="pfd-prop-baseline">Spec: &gt; 98.0%</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Internal Reflux Ratio (R/D)</span>
+                          <span className="pfd-prop-val mono">{telemetry.distillation?.reflux_ratio ? telemetry.distillation.reflux_ratio.toFixed(2) : '1.25'}</span>
+                          <span className="pfd-prop-baseline">Target: 1.25</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Column Top Pressure</span>
+                          <span className="pfd-prop-val mono">{telemetry.distillation?.column_pressure ? `${telemetry.distillation.column_pressure.toFixed(3)} bar` : '1.050 bar'}</span>
+                          <span className="pfd-prop-baseline">Atm Setpoint: 1.050 bar</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Reboiler Heat Duty</span>
+                          <span className="pfd-prop-val mono">{telemetry.distillation?.reboiler_duty ? `${telemetry.distillation.reboiler_duty.toFixed(2)} kW` : '18.50 kW'}</span>
+                          <span className="pfd-prop-baseline">Design: 18.5 kW</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Condenser Cooling Duty</span>
+                          <span className="pfd-prop-val mono">{telemetry.distillation?.condenser_duty ? `${telemetry.distillation.condenser_duty.toFixed(2)} kW` : '16.20 kW'}</span>
+                          <span className="pfd-prop-baseline">Design: 16.2 kW</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Sump Liquid Level</span>
+                          <span className="pfd-prop-val mono">{telemetry.distillation?.bottoms_level ? `${telemetry.distillation.bottoms_level.toFixed(1)}%` : '55.0%'}</span>
+                          <span className="pfd-prop-baseline">Control Band: 40-70%</span>
+                        </div>
+                      </>
+                    )}
 
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Inlet Temperature</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{hx.inlet_temperature.toFixed(1)} °C</span>
-                      <span className="pfd-metric-trend numeric-data">→ Stable</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 25.2 °C</span>
+                    {(selectedUnit === 'T-100' || selectedUnit === 'T-104' || selectedUnit === 'T-105') && (
+                      <>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Vessel Volume</span>
+                          <span className="pfd-prop-val mono">500.0 L</span>
+                          <span className="pfd-prop-baseline">Design Capacity</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Tank Level</span>
+                          <span className="pfd-prop-val mono">{selectedUnit === 'T-100' ? '75.0%' : selectedUnit === 'T-104' ? '62.4%' : '48.1%'}</span>
+                          <span className="pfd-prop-baseline">Normal Operating Range</span>
+                        </div>
+                        <div className="pfd-prop-card">
+                          <span className="pfd-prop-label">Operating Pressure</span>
+                          <span className="pfd-prop-val mono">1.013 bar</span>
+                          <span className="pfd-prop-baseline">Atmospheric Vented</span>
+                        </div>
+                      </>
+                    )}
                   </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Outlet Temperature</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{hx.outlet_temperature.toFixed(1)} °C</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {hx.outlet_temperature < 32 ? <TrendingDown size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 38.1 °C</span>
-                  </div>
-
-                  <div className={`pfd-metric-card ${hx.temperature_difference < 5.0 ? 'alert' : ''}`}>
-                    <span className="pfd-metric-label">Thermal ΔT</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{hx.temperature_difference.toFixed(1)} °C</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {hx.temperature_difference < 10 ? <TrendingDown size={11} color="#DC2626" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 12.9 °C</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Efficiency</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{(hx.efficiency ?? 95).toFixed(0)} %</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {(hx.efficiency ?? 95) < 70 ? <TrendingDown size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 95 %</span>
-                  </div>
-                </>
-              )}
-
-              {/* REACTOR METRICS */}
-              {selectedEquipment === 'reactor' && (
-                <>
-                  <div className="pfd-metric-card highlight">
-                    <span className="pfd-metric-label">Feed Flow</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{(reactor.feed_flow ?? (pumpFlow * 0.98)).toFixed(1)} L/min</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {(reactor.feed_flow ?? pumpFlow) < 9.5 ? <TrendingDown size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 10.0 L/min</span>
-                  </div>
-
-                  <div className={`pfd-metric-card ${reactor.temperature > 75 ? 'alert' : ''}`}>
-                    <span className="pfd-metric-label">Core Temperature</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{reactor.temperature.toFixed(1)} °C</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {reactor.temperature > 70 ? <TrendingUp size={11} color="#DC2626" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 65.0 °C</span>
-                  </div>
-
-                  <div className={`pfd-metric-card ${reactor.pressure > 2.40 ? 'alert' : ''}`}>
-                    <span className="pfd-metric-label">Pressure</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{reactor.pressure.toFixed(2)} bar</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {reactor.pressure > 2.20 ? <TrendingUp size={11} color="#DC2626" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 2.05 bar</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Liquid Level</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{reactor.level.toFixed(1)} %</span>
-                      <span className="pfd-metric-trend numeric-data">→ Stable</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 50.0 %</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Agitator Speed</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{Math.round(reactor.agitator_speed)} RPM</span>
-                      <span className="pfd-metric-trend numeric-data">→ Nominal</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 350 RPM</span>
-                  </div>
-
-                  <div className={`pfd-metric-card ${reactor.cooling_status === 0 ? 'alert' : 'highlight'}`}>
-                    <span className="pfd-metric-label">Jacket Cooling</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data" style={{ color: reactor.cooling_status === 1 ? '#15803D' : '#DC2626' }}>
-                        {reactor.cooling_status === 1 ? 'ACTIVE (ON)' : 'TRIPPED (OFF)'}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: Active ON</span>
-                  </div>
-                </>
-              )}
-
-              {/* DISTILLATION METRICS */}
-              {selectedEquipment === 'distillation' && (
-                <>
-                  <div className="pfd-metric-card highlight">
-                    <span className="pfd-metric-label">Feed Flow</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{(dist.feed_flow ?? (pumpFlow * 0.97)).toFixed(1)} L/min</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {(dist.feed_flow ?? pumpFlow) < 9.5 ? <TrendingDown size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 10.0 L/min</span>
-                  </div>
-
-                  <div className={`pfd-metric-card ${dist.top_temperature > 78 ? 'warn' : ''}`}>
-                    <span className="pfd-metric-label">Top Vapor Temp</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{dist.top_temperature.toFixed(1)} °C</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {dist.top_temperature > 77.5 ? <TrendingUp size={11} color="#C2410C" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 76.5 °C</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Bottoms Temp</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{dist.bottom_temperature.toFixed(1)} °C</span>
-                      <span className="pfd-metric-trend numeric-data">→ Stable</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 98.4 °C</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Column Pressure</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{dist.pressure.toFixed(2)} bar</span>
-                      <span className="pfd-metric-trend numeric-data">→ Stable</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 2.10 bar</span>
-                  </div>
-
-                  <div className={`pfd-metric-card ${dist.reflux_ratio < 1.2 ? 'alert' : ''}`}>
-                    <span className="pfd-metric-label">Reflux Ratio</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{dist.reflux_ratio.toFixed(2)}</span>
-                      <span className="pfd-metric-trend numeric-data">
-                        {dist.reflux_ratio < 1.5 ? <TrendingDown size={11} color="#DC2626" /> : <Minus size={11} color="#15803D" />}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Baseline: 1.85</span>
-                  </div>
-                </>
-              )}
-
-              {/* STREAM METRICS (CLICKED STREAM) */}
-              {isStream && (
-                <>
-                  <div className="pfd-metric-card highlight">
-                    <span className="pfd-metric-label">Stream Mass Flow</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">
-                        {streams[selectedEquipment as keyof typeof streams]?.flow.toFixed(1)} L/min
-                      </span>
-                      <span className="pfd-metric-trend numeric-data">● Live</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Nominal: ~10.0 L/min</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Temperature</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">
-                        {streams[selectedEquipment as keyof typeof streams]?.temperature.toFixed(1)} °C
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Stream Thermal Value</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Pressure</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">
-                        {streams[selectedEquipment as keyof typeof streams]?.pressure.toFixed(2)} bar
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Line Static Head</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Source → Target</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val" style={{ fontSize: '0.78rem' }}>
-                        {streams[selectedEquipment as keyof typeof streams]?.from} → {streams[selectedEquipment as keyof typeof streams]?.to}
-                      </span>
-                    </div>
-                    <span className="pfd-metric-baseline">Hydraulic Link</span>
-                  </div>
-                </>
-              )}
-
-              {/* TANK METRICS */}
-              {isTank && (
-                <>
-                  <div className="pfd-metric-card highlight">
-                    <span className="pfd-metric-label">Throughput Flow</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">{pumpFlow.toFixed(1)} L/min</span>
-                      <span className="pfd-metric-trend numeric-data">● Live</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Connected Mass Flow</span>
-                  </div>
-
-                  <div className="pfd-metric-card">
-                    <span className="pfd-metric-label">Storage Inventory</span>
-                    <div className="pfd-metric-val-row">
-                      <span className="pfd-metric-val numeric-data">100 %</span>
-                      <span className="pfd-metric-trend numeric-data">→ Stable</span>
-                    </div>
-                    <span className="pfd-metric-baseline">Atmospheric Tank</span>
-                  </div>
-                </>
+                </div>
+              ) : (
+                <div className="pfd-empty-state">
+                  <Info className="w-6 h-6 text-slate-400" />
+                  <p>Click on any equipment unit in the flowsheet diagram to view engineering properties and causal links.</p>
+                </div>
               )}
             </div>
+          )}
 
-            {/* MINI LIVE TREND SPARKLINE PREVIEW */}
-            {timeSeries && timeSeries.length > 2 && (
-              <div className="pfd-trend-preview-box" style={{ marginTop: '10px' }}>
-                <div className="pfd-trend-header">
-                  <span>LIVE HISTORICAL TELEMETRY TREND PREVIEW</span>
-                  <span className="numeric-data">Last {timeSeries.length}s</span>
-                </div>
-                <div style={{ width: '100%', height: 75 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={timeSeries} margin={{ top: 4, right: 8, bottom: 0, left: -24 }}>
-                      <XAxis dataKey="time" hide />
-                      <YAxis domain={['auto', 'auto']} tick={{ fontSize: 9 }} />
-                      <ChartTooltip
-                        contentStyle={{ background: '#0F172A', border: 'none', borderRadius: '4px', fontSize: '11px', color: '#FFFFFF' }}
-                        labelStyle={{ color: '#94A3B8' }}
-                      />
-                      {selectedEquipment === 'pump' && (
-                        <>
-                          <Line type="monotone" dataKey="pumpRpm" stroke="#2563EB" strokeWidth={2} dot={false} isAnimationActive={false} name="RPM" />
-                          <Line type="monotone" dataKey="pumpFlow" stroke="#059669" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Flow (L/m)" />
-                        </>
-                      )}
-                      {selectedEquipment === 'heat_exchanger' && (
-                        <>
-                          <Line type="monotone" dataKey="hxDeltaT" stroke="#2563EB" strokeWidth={2} dot={false} isAnimationActive={false} name="ΔT (°C)" />
-                          <Line type="monotone" dataKey="hxOutletTemp" stroke="#D97706" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Tout (°C)" />
-                        </>
-                      )}
-                      {selectedEquipment === 'reactor' && (
-                        <>
-                          <Line type="monotone" dataKey="reactorTemp" stroke="#DC2626" strokeWidth={2} dot={false} isAnimationActive={false} name="Temp (°C)" />
-                          <Line type="monotone" dataKey="reactorPressure" stroke="#7C3AED" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Pressure (bar)" />
-                        </>
-                      )}
-                      {selectedEquipment === 'distillation' && (
-                        <>
-                          <Line type="monotone" dataKey="distTopTemp" stroke="#EA580C" strokeWidth={2} dot={false} isAnimationActive={false} name="Top T (°C)" />
-                          <Line type="monotone" dataKey="distReflux" stroke="#2563EB" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Reflux" />
-                        </>
-                      )}
-                      {(isStream || isTank) && (
-                        <Line type="monotone" dataKey="pumpFlow" stroke="#0284C7" strokeWidth={2} dot={false} isAnimationActive={false} name="Train Flow (L/m)" />
-                      )}
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+          {/* TAB 2: STREAMS TABLE */}
+          {activeTab === 'streams' && (
+            <div className="pfd-tab-content">
+              <div className="pfd-streams-table-wrapper">
+                <table className="pfd-streams-table">
+                  <thead>
+                    <tr>
+                      <th>Stream Tag</th>
+                      <th>Description</th>
+                      <th>Origin &rarr; Destination</th>
+                      <th>Flow Rate (L/min)</th>
+                      <th>Temperature (°C)</th>
+                      <th>Pressure (bar)</th>
+                      <th>Key Composition</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {streams.map((stream) => (
+                      <tr
+                        key={stream.id}
+                        className={`pfd-stream-row ${selectedStream?.id === stream.id ? 'active' : ''}`}
+                        onClick={() => handleStreamClick(stream)}
+                      >
+                        <td className="font-mono font-bold text-sky-700">{stream.id}</td>
+                        <td className="text-slate-800">{stream.name}</td>
+                        <td className="font-mono text-xs text-slate-500">{stream.from} &rarr; {stream.to}</td>
+                        <td className="font-mono font-bold text-slate-900">{(stream.flow_rate ?? stream.flow ?? 10.0).toFixed(2)}</td>
+                        <td className="font-mono text-slate-700">{stream.temperature.toFixed(1)}</td>
+                        <td className="font-mono text-slate-700">{stream.pressure.toFixed(2)}</td>
+                        <td className="font-mono text-xs text-slate-600">
+                          {stream.composition
+                            ? Object.entries(stream.composition)
+                                .map(([k, v]) => `${k.replace('_', ' ')}: ${(Number(v) * 100).toFixed(1)}%`)
+                                .join(', ')
+                            : 'N/A'}
+                        </td>
+                        <td>
+                          <span className={`pfd-stream-status-pill ${stream.status}`}>
+                            {stream.status.toUpperCase()}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            )}
-          </div>
 
-          {/* RIGHT: IN-PLACE WHAT-IF SIMULATION CONTROLS & ACTIONS */}
-          <div className="pfd-sim-control-box">
-            <div className="pfd-sim-header">
-              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <Sliders size={13} color="var(--primary-blue)" />
-                <span>IN-PLACE SIMULATION CONTROL (WHAT-IF)</span>
-              </span>
-              <span style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>Coupled Model</span>
-            </div>
-
-            {/* P-101 CONTROLS */}
-            {selectedEquipment === 'pump' && (
-              <div className="pfd-slider-container">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.74rem', fontWeight: 700 }}>P-101 Impeller Speed:</span>
-                  <div className="pfd-sim-stepper">
-                    <button
-                      className="pfd-step-btn"
-                      onClick={() => {
-                        const val = Math.max(1600, pumpRpm - 100);
-                        setPumpRpm(val);
-                        handleApplyControl({ pump_rpm: val });
-                      }}
-                      disabled={isUpdating}
-                    >
-                      -100
-                    </button>
-                    <span className="numeric-data" style={{ fontWeight: 800, color: 'var(--primary-blue)', minWidth: '60px', textAlign: 'center' }}>
-                      {pumpRpm} RPM
+              {selectedStream && (
+                <div className="pfd-stream-detail-box">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="font-semibold text-sky-800">Stream {selectedStream.id}: {selectedStream.name}</h4>
+                    <span className={`pfd-stream-status-pill ${selectedStream.status}`}>
+                      {selectedStream.status.toUpperCase()}
                     </span>
-                    <button
-                      className="pfd-step-btn"
-                      onClick={() => {
-                        const val = Math.min(3000, pumpRpm + 100);
-                        setPumpRpm(val);
-                        handleApplyControl({ pump_rpm: val });
-                      }}
-                      disabled={isUpdating}
-                    >
-                      +100
-                    </button>
+                  </div>
+                  <p className="text-xs text-slate-600 mb-3">
+                    Calculated from first-principles mass and enthalpy balance connecting upstream unit <strong>{selectedStream.from}</strong> to downstream unit <strong>{selectedStream.to}</strong>.
+                  </p>
+                  <div className="grid grid-cols-4 gap-3 text-xs">
+                    <div className="bg-white p-2.5 rounded border border-slate-200">
+                      <span className="text-slate-500 block mb-1">Volumetric Flow</span>
+                      <span className="font-mono font-bold text-slate-900 text-sm">{(selectedStream.flow_rate ?? selectedStream.flow ?? 10.0).toFixed(2)} L/min</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded border border-slate-200">
+                      <span className="text-slate-500 block mb-1">Stream Enthalpy Temp</span>
+                      <span className="font-mono font-bold text-slate-900 text-sm">{selectedStream.temperature.toFixed(1)} °C</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded border border-slate-200">
+                      <span className="text-slate-500 block mb-1">Hydraulic Pressure</span>
+                      <span className="font-mono font-bold text-slate-900 text-sm">{selectedStream.pressure.toFixed(2)} bar</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded border border-slate-200">
+                      <span className="text-slate-500 block mb-1">Pipeline Velocity</span>
+                      <span className="font-mono font-bold text-slate-900 text-sm">{((selectedStream.flow_rate ?? selectedStream.flow ?? 10.0) * 0.12).toFixed(2)} m/s</span>
+                    </div>
                   </div>
                 </div>
-
-                <input
-                  type="range"
-                  min={1600}
-                  max={3000}
-                  step={50}
-                  value={pumpRpm}
-                  onChange={(e) => setPumpRpm(Number(e.target.value))}
-                  onMouseUp={() => handleApplyControl({ pump_rpm: pumpRpm })}
-                  onTouchEnd={() => handleApplyControl({ pump_rpm: pumpRpm })}
-                  className="pfd-slider-input"
-                  disabled={isUpdating}
-                />
-                <div className="pfd-slider-limits">
-                  <span>1600 RPM (Low Flow)</span>
-                  <span>2450 RPM (Nominal)</span>
-                  <span>3000 RPM (Max)</span>
-                </div>
-              </div>
-            )}
-
-            {/* E-101 CONTROLS */}
-            {selectedEquipment === 'heat_exchanger' && (
-              <div className="pfd-slider-container">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.74rem', fontWeight: 700 }}>Heat Transfer Efficiency:</span>
-                  <span className="numeric-data" style={{ fontWeight: 800, color: 'var(--primary-blue)' }}>
-                    {hxEffic}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={30}
-                  max={100}
-                  step={5}
-                  value={hxEffic}
-                  onChange={(e) => setHxEffic(Number(e.target.value))}
-                  onMouseUp={() => handleApplyControl({ heat_exchanger_efficiency: hxEffic })}
-                  onTouchEnd={() => handleApplyControl({ heat_exchanger_efficiency: hxEffic })}
-                  className="pfd-slider-input"
-                  disabled={isUpdating}
-                />
-                <div className="pfd-slider-limits">
-                  <span>30% (Severe Fouling)</span>
-                  <span>95% (Nominal)</span>
-                  <span>100% (Clean)</span>
-                </div>
-              </div>
-            )}
-
-            {/* R-101 CONTROLS */}
-            {selectedEquipment === 'reactor' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.74rem', fontWeight: 700 }}>Jacket Cooling Control:</span>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      className={`pfd-step-btn ${coolingStatus === 1 ? 'active-step' : ''}`}
-                      style={{ background: coolingStatus === 1 ? '#DCFCE7' : '#FFFFFF', color: coolingStatus === 1 ? '#15803D' : 'inherit', borderColor: coolingStatus === 1 ? '#86EFAC' : '#CBD5E1' }}
-                      onClick={() => {
-                        setCoolingStatus(1);
-                        handleApplyControl({ cooling_status: 1 });
-                      }}
-                      disabled={isUpdating}
-                    >
-                      Cooling ON
-                    </button>
-                    <button
-                      className={`pfd-step-btn ${coolingStatus === 0 ? 'active-step' : ''}`}
-                      style={{ background: coolingStatus === 0 ? '#FEE2E2' : '#FFFFFF', color: coolingStatus === 0 ? '#B91C1C' : 'inherit', borderColor: coolingStatus === 0 ? '#FCA5A5' : '#CBD5E1' }}
-                      onClick={() => {
-                        setCoolingStatus(0);
-                        handleApplyControl({ cooling_status: 0 });
-                      }}
-                      disabled={isUpdating}
-                    >
-                      Trip Cooling (OFF)
-                    </button>
-                  </div>
-                </div>
-
-                <div className="pfd-slider-container">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>Agitator Speed:</span>
-                    <span className="numeric-data" style={{ fontWeight: 800, color: 'var(--primary-blue)', fontSize: '0.76rem' }}>{agitatorSpeed} RPM</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={100}
-                    max={500}
-                    step={25}
-                    value={agitatorSpeed}
-                    onChange={(e) => setAgitatorSpeed(Number(e.target.value))}
-                    onMouseUp={() => handleApplyControl({ agitator_speed: agitatorSpeed })}
-                    onTouchEnd={() => handleApplyControl({ agitator_speed: agitatorSpeed })}
-                    className="pfd-slider-input"
-                    disabled={isUpdating}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* D-101 CONTROLS */}
-            {selectedEquipment === 'distillation' && (
-              <div className="pfd-slider-container">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.74rem', fontWeight: 700 }}>Reflux Ratio (R):</span>
-                  <span className="numeric-data" style={{ fontWeight: 800, color: 'var(--primary-blue)' }}>
-                    {refluxRatio.toFixed(2)}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={0.5}
-                  max={3.5}
-                  step={0.05}
-                  value={refluxRatio}
-                  onChange={(e) => setRefluxRatio(Number(e.target.value))}
-                  onMouseUp={() => handleApplyControl({ reflux_ratio: refluxRatio })}
-                  onTouchEnd={() => handleApplyControl({ reflux_ratio: refluxRatio })}
-                  className="pfd-slider-input"
-                  disabled={isUpdating}
-                />
-                <div className="pfd-slider-limits">
-                  <span>0.50 (Starvation)</span>
-                  <span>1.85 (Nominal)</span>
-                  <span>3.50 (High Reflux)</span>
-                </div>
-              </div>
-            )}
-
-            {/* STREAMS OR TANKS: GLOBAL FLOW DRIVER */}
-            {(isStream || isTank) && (
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                <p style={{ margin: '0 0 6px 0' }}>
-                  Stream flow rate is dynamically driven by <strong>P-101 Feed Pump</strong> and hydraulic network backpressure.
-                </p>
-                <button
-                  className="pfd-step-btn"
-                  onClick={() => handleSelect('pump')}
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}
-                >
-                  <Activity size={12} />
-                  <span>Select P-101 to Modulate System Flow</span>
-                </button>
-              </div>
-            )}
-
-            {/* ACTION BUTTONS: SIMULATE DEGRADATION & ANALYZE WITH AI */}
-            <div className="pfd-inspector-actions">
-              {!isStream && !isTank && (
-                <button
-                  className="pfd-fault-btn"
-                  onClick={() => handleInjectFaultForUnit(selectedEquipment)}
-                  title="Inject early degradation fault for this unit"
-                >
-                  <AlertTriangle size={12} />
-                  <span>Simulate Degradation</span>
-                </button>
               )}
-
-              <button
-                className="pfd-ai-btn"
-                onClick={() => {
-                  const targetUnit = isStream || isTank ? 'pump' : selectedEquipment;
-                  if (onAskAiAbout) onAskAiAbout(targetUnit);
-                }}
-                title="Send current process telemetry to AI Copilot"
-              >
-                <Sparkles size={12} />
-                <span>Analyze with AI</span>
-              </button>
-
-              <button
-                className="pfd-reset-mini-btn"
-                onClick={handleResetControls}
-                disabled={isUpdating}
-                title="Reset simulation variables"
-              >
-                <RotateCcw size={11} />
-                <span>Reset Unit</span>
-              </button>
             </div>
-          </div>
+          )}
+
+          {/* TAB 3: SIMULATION CONTROLS */}
+          {activeTab === 'controls' && (
+            <div className="pfd-tab-content">
+              <div className="pfd-controls-intro">
+                <Sliders className="w-4 h-4 text-sky-700" />
+                <p className="text-xs text-slate-700">
+                  Manipulate real-time boundary conditions and equipment actuators. Changes propagate dynamically through the causal first-principles simulation loop (P-101 &rarr; E-101 &rarr; R-101 &rarr; D-101).
+                </p>
+              </div>
+
+              <div className="pfd-controls-grid">
+                {/* P-101 Pump Controls */}
+                <div className="pfd-control-card">
+                  <h4 className="pfd-control-heading">P-101 Pump Controls</h4>
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Pump RPM Setpoint</span>
+                      <span className="font-mono font-bold text-sky-700">{localControls.pump_rpm ?? telemetry.pump?.rpm ?? 2900} RPM</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="3500"
+                      step="50"
+                      value={localControls.pump_rpm ?? telemetry.pump?.rpm ?? 2900}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, pump_rpm: val }));
+                        handleApplyControlChange({ pump_rpm: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Suction Line Throttling</span>
+                      <span className="font-mono font-bold text-amber-700">{((localControls.suction_restriction ?? 0) * 100).toFixed(0)}% Restricted</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="0.9"
+                      step="0.05"
+                      value={localControls.suction_restriction ?? 0}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, suction_restriction: val }));
+                        handleApplyControlChange({ suction_restriction: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+                </div>
+
+                {/* E-101 Exchanger Controls */}
+                <div className="pfd-control-card">
+                  <h4 className="pfd-control-heading">E-101 Exchanger Fouling</h4>
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Tube Fouling Level (Rf)</span>
+                      <span className="font-mono font-bold text-amber-700">{((localControls.fouling_level ?? 0) * 100).toFixed(0)}% Fouled</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="0.8"
+                      step="0.05"
+                      value={localControls.fouling_level ?? 0}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, fouling_level: val }));
+                        handleApplyControlChange({ fouling_level: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Exchanger Heat Duty Multiplier</span>
+                      <span className="font-mono font-bold text-sky-700">{(localControls.heat_exchanger_efficiency ?? 1.0).toFixed(2)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.2"
+                      max="1.5"
+                      step="0.05"
+                      value={localControls.heat_exchanger_efficiency ?? 1.0}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, heat_exchanger_efficiency: val }));
+                        handleApplyControlChange({ heat_exchanger_efficiency: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+                </div>
+
+                {/* R-101 Reactor Controls */}
+                <div className="pfd-control-card">
+                  <h4 className="pfd-control-heading">R-101 Reactor Jacket &amp; Kinetics</h4>
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Cooling Water Flow</span>
+                      <span className="font-mono font-bold text-sky-700">{localControls.reactor_cooling_flow ?? telemetry.reactor?.cooling_flow ?? 15.0} L/min</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="30"
+                      step="1"
+                      value={localControls.reactor_cooling_flow ?? telemetry.reactor?.cooling_flow ?? 15.0}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, reactor_cooling_flow: val }));
+                        handleApplyControlChange({ reactor_cooling_flow: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Agitator Speed</span>
+                      <span className="font-mono font-bold text-emerald-700">{localControls.agitator_speed_rpm ?? 350} RPM</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="600"
+                      step="25"
+                      value={localControls.agitator_speed_rpm ?? 350}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, agitator_speed_rpm: val }));
+                        handleApplyControlChange({ agitator_speed_rpm: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+                </div>
+
+                {/* D-101 Distillation Controls */}
+                <div className="pfd-control-card">
+                  <h4 className="pfd-control-heading">D-101 Column Reflux &amp; Reboiler</h4>
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Reflux Ratio Setpoint (R/D)</span>
+                      <span className="font-mono font-bold text-sky-700">{localControls.reflux_ratio ?? telemetry.distillation?.reflux_ratio ?? 1.25}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="3.0"
+                      step="0.05"
+                      value={localControls.reflux_ratio ?? telemetry.distillation?.reflux_ratio ?? 1.25}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, reflux_ratio: val }));
+                        handleApplyControlChange({ reflux_ratio: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+
+                  <div className="pfd-control-field">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-600">Reboiler Duty Mod</span>
+                      <span className="font-mono font-bold text-amber-700">{(localControls.reboiler_duty_mod ?? 1.0).toFixed(2)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.3"
+                      max="2.0"
+                      step="0.05"
+                      value={localControls.reboiler_duty_mod ?? 1.0}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLocalControls(prev => ({ ...prev, reboiler_duty_mod: val }));
+                        handleApplyControlChange({ reboiler_duty_mod: val });
+                      }}
+                      className="pfd-range-slider"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pfd-controls-footer">
+                <button
+                  className="pfd-btn-secondary"
+                  onClick={handleReset}
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Reset to Engineering Baseline
+                </button>
+                {isUpdatingControls && (
+                  <span className="text-xs text-sky-700 animate-pulse flex items-center gap-1.5">
+                    <Activity className="w-3.5 h-3.5" /> Propagating changes through causal flowsheet...
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
-
-      {/* 6. FLOWSHEET FOOTER BAR */}
-      <div className="flowsheet-footer-bar">
-        <div className="flowsheet-legend">
-          <span className="legend-item"><span className="legend-dot normal"></span> Nominal Flow Stream</span>
-          <span className="legend-item"><span className="legend-dot warning"></span> Early Degradation / Deviation</span>
-          <span className="legend-item"><span className="legend-dot critical"></span> Critical Alarm Trigger</span>
-        </div>
-
-        <div className="flowsheet-cta-group">
-          <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-            Selected: <strong style={{ color: 'var(--primary-blue)' }}>{selectedEquipment.toUpperCase().replace('_', ' ')}</strong>
-          </span>
-          <button
-            className="ask-copilot-flow-btn"
-            onClick={() => {
-              const targetUnit = isStream || isTank ? 'pump' : selectedEquipment;
-              if (onAskAiAbout) onAskAiAbout(targetUnit);
-            }}
-          >
-            <MessageSquare size={12} />
-            <span>Ask AI About {selectedEquipment.toUpperCase().replace('_', ' ')}</span>
-          </button>
-        </div>
-      </div>
-    </section>
+    </div>
   );
 };
-
-export default ProcessFlowsheet;

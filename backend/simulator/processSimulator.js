@@ -23,7 +23,7 @@ export class ProcessSimulator {
     // Hardware stream hook (ESP32)
     this.externalHardwareState = null;
 
-    // Unit States
+    // Unit States with full first-principles properties
     this.pump = {
       status: 'RUNNING',
       rpm: 2450,
@@ -31,8 +31,14 @@ export class ProcessSimulator {
       flow: 10.0, // L/min
       suction_pressure: 1.01, // bar
       discharge_pressure: 2.80, // bar
+      head: 18.25, // meters
+      efficiency: 78.5, // %
+      power_kw: 0.12, // kW
       inlet_temperature: 25.2, // °C
       outlet_temperature: 38.1, // °C
+      suction_restriction: 0, // 0 to 1
+      discharge_restriction: 0, // 0 to 1
+      pump_condition: 'normal',
       health: 100
     };
 
@@ -40,6 +46,11 @@ export class ProcessSimulator {
       status: 'NORMAL',
       flow: 9.9, // L/min
       efficiency: 95.0, // %
+      heat_duty: 8.92, // kW
+      overall_u: 850, // W/(m2*K)
+      fouling_factor: 0.0001, // m2*K/W
+      fouling_level: 0, // 0 to 100%
+      thermal_condition: 'clean',
       inlet_temperature: 25.2,
       outlet_temperature: 38.1,
       temperature_difference: 12.9, // °C
@@ -54,7 +65,12 @@ export class ProcessSimulator {
       pressure: 2.05, // bar
       level: 50.0, // %
       agitator_speed: 350, // RPM
-      cooling_status: 1, // 1 = ON, 0 = OFF
+      cooling_status: 1, // 1 = ON, 0 = OFF, 0.5 = Throttled
+      residence_time: 1.53, // min (for 15 L vessel)
+      conversion: 84.5, // %
+      heat_generation: 5.4, // kW
+      heat_removal: 5.2, // kW
+      reaction_kinetics_mod: 1.0,
       health: 100
     };
 
@@ -66,6 +82,14 @@ export class ProcessSimulator {
       pressure: 2.10, // bar
       level: 52.0, // %
       reflux_ratio: 1.85, // L/D
+      reflux_flow: 8.08, // L/min
+      distillate_flow: 4.37, // L/min
+      bottoms_flow: 5.14, // L/min
+      reboiler_duty: 12.4, // kW
+      condenser_duty: 11.8, // kW
+      separation_purity: 98.2, // %
+      reboiler_duty_mod: 100, // %
+      column_pressure_setpoint: 2.10, // bar
       health: 100
     };
 
@@ -81,14 +105,25 @@ export class ProcessSimulator {
     // Simulation / What-If Parameter Overrides (Adjustable by operator for experimentation)
     this.userControls = {
       pump_rpm: null,
+      suction_restriction: null,
+      discharge_restriction: null,
+      pump_condition: null,
       heat_exchanger_efficiency: null,
+      fouling_level: null,
+      thermal_condition: null,
       cooling_status: null,
+      agitator_speed: null,
+      reaction_kinetics_mod: null,
       reflux_ratio: null,
-      agitator_speed: null
+      reboiler_duty_mod: null,
+      column_pressure_setpoint: null
     };
 
     // Central Process Graph Model
     this.processGraph = this.createDefaultProcessGraph();
+
+    // Initial Process Streams
+    this.streams = this.calculateStreams();
 
     // Intelligent Alerts State Repository
     this.alerts = {
@@ -426,14 +461,28 @@ export class ProcessSimulator {
   executeRemoteCommand({ command, equipment, params = {} }) {
     if (command === 'SET_RPM' || (equipment === 'P-101' && params.rpm !== undefined)) {
       this.userControls.pump_rpm = Number(params.rpm);
+    } else if (command === 'SET_SUCTION_RESTRICTION' || (equipment === 'P-101' && params.suction_restriction !== undefined)) {
+      this.userControls.suction_restriction = Number(params.suction_restriction);
+    } else if (command === 'SET_DISCHARGE_RESTRICTION' || (equipment === 'P-101' && params.discharge_restriction !== undefined)) {
+      this.userControls.discharge_restriction = Number(params.discharge_restriction);
+    } else if (command === 'SET_PUMP_CONDITION' || (equipment === 'P-101' && params.pump_condition !== undefined)) {
+      this.userControls.pump_condition = String(params.pump_condition);
     } else if (command === 'SET_EFFICIENCY' || (equipment === 'E-101' && params.efficiency !== undefined)) {
       this.userControls.heat_exchanger_efficiency = Number(params.efficiency);
+    } else if (command === 'SET_FOULING' || (equipment === 'E-101' && params.fouling_level !== undefined)) {
+      this.userControls.fouling_level = Number(params.fouling_level);
     } else if (command === 'SET_COOLING' || (equipment === 'R-101' && params.cooling_status !== undefined)) {
       this.userControls.cooling_status = Number(params.cooling_status);
     } else if (command === 'SET_AGITATOR' || (equipment === 'R-101' && params.agitator_speed !== undefined)) {
       this.userControls.agitator_speed = Number(params.agitator_speed);
+    } else if (command === 'SET_KINETICS' || (equipment === 'R-101' && params.reaction_kinetics_mod !== undefined)) {
+      this.userControls.reaction_kinetics_mod = Number(params.reaction_kinetics_mod);
     } else if (command === 'SET_REFLUX' || (equipment === 'D-101' && params.reflux_ratio !== undefined)) {
       this.userControls.reflux_ratio = Number(params.reflux_ratio);
+    } else if (command === 'SET_REBOILER_DUTY' || (equipment === 'D-101' && params.reboiler_duty_mod !== undefined)) {
+      this.userControls.reboiler_duty_mod = Number(params.reboiler_duty_mod);
+    } else if (command === 'SET_COLUMN_PRESSURE' || (equipment === 'D-101' && params.column_pressure_setpoint !== undefined)) {
+      this.userControls.column_pressure_setpoint = Number(params.column_pressure_setpoint);
     } else if (command === 'RESET_CONTROLS') {
       this.resetUserControls();
     }
@@ -443,19 +492,35 @@ export class ProcessSimulator {
   resetUserControls() {
     this.userControls = {
       pump_rpm: null,
+      suction_restriction: null,
+      discharge_restriction: null,
+      pump_condition: null,
       heat_exchanger_efficiency: null,
+      fouling_level: null,
+      thermal_condition: null,
       cooling_status: null,
+      agitator_speed: null,
+      reaction_kinetics_mod: null,
       reflux_ratio: null,
-      agitator_speed: null
+      reboiler_duty_mod: null,
+      column_pressure_setpoint: null
     };
   }
 
   setUserControls(controls = {}) {
     if (controls.pump_rpm !== undefined) this.userControls.pump_rpm = controls.pump_rpm;
+    if (controls.suction_restriction !== undefined) this.userControls.suction_restriction = controls.suction_restriction;
+    if (controls.discharge_restriction !== undefined) this.userControls.discharge_restriction = controls.discharge_restriction;
+    if (controls.pump_condition !== undefined) this.userControls.pump_condition = controls.pump_condition;
     if (controls.heat_exchanger_efficiency !== undefined) this.userControls.heat_exchanger_efficiency = controls.heat_exchanger_efficiency;
+    if (controls.fouling_level !== undefined) this.userControls.fouling_level = controls.fouling_level;
+    if (controls.thermal_condition !== undefined) this.userControls.thermal_condition = controls.thermal_condition;
     if (controls.cooling_status !== undefined) this.userControls.cooling_status = controls.cooling_status;
-    if (controls.reflux_ratio !== undefined) this.userControls.reflux_ratio = controls.reflux_ratio;
     if (controls.agitator_speed !== undefined) this.userControls.agitator_speed = controls.agitator_speed;
+    if (controls.reaction_kinetics_mod !== undefined) this.userControls.reaction_kinetics_mod = controls.reaction_kinetics_mod;
+    if (controls.reflux_ratio !== undefined) this.userControls.reflux_ratio = controls.reflux_ratio;
+    if (controls.reboiler_duty_mod !== undefined) this.userControls.reboiler_duty_mod = controls.reboiler_duty_mod;
+    if (controls.column_pressure_setpoint !== undefined) this.userControls.column_pressure_setpoint = controls.column_pressure_setpoint;
     return this.userControls;
   }
 
@@ -522,6 +587,11 @@ export class ProcessSimulator {
     let targetRpm = baseRpm;
     let targetVib = 0.08;
 
+    const pumpCondition = this.userControls.pump_condition || (fault === 'pump_fault' ? 'worn_impeller' : (fault === 'early_pump_degradation' ? 'early_wear' : 'normal'));
+    this.pump.pump_condition = pumpCondition;
+    this.pump.suction_restriction = this.userControls.suction_restriction !== null ? this.userControls.suction_restriction : 0;
+    this.pump.discharge_restriction = this.userControls.discharge_restriction !== null ? this.userControls.discharge_restriction : 0;
+
     if (fault === 'early_pump_degradation') {
       targetRpm = baseRpm - s * (baseRpm - 2150);
       targetVib = 0.08 + s * (0.28 - 0.08);
@@ -533,8 +603,15 @@ export class ProcessSimulator {
       targetVib = 0.08 + s * (0.35 - 0.08);
     }
 
+    if (pumpCondition === 'cavitating') {
+      targetVib += 0.22;
+      targetRpm -= 80;
+    } else if (pumpCondition === 'worn_impeller') {
+      targetVib += 0.16;
+    }
+
     // Dynamic lag on RPM (first-order dynamic response)
-    const tauRpm = 1.8;
+    const tauRpm = 1.0;
     this.lags.pumpRpm += (targetRpm - this.lags.pumpRpm) / tauRpm;
     this.pump.rpm = Math.round(clamp(this.lags.pumpRpm + noise(8), 0, 3500));
 
@@ -542,67 +619,101 @@ export class ProcessSimulator {
     this.pump.vibration += (targetVib - this.pump.vibration) * 0.30 + noise(0.01);
     this.pump.vibration = Number(clamp(this.pump.vibration, 0.04, 1.20).toFixed(2));
 
-    // Deterministic flow function: Q = (RPM / 2450) * 10.0 L/min
-    const theoreticalFlow = (this.pump.rpm / 2450) * 10.0;
-    const tauFlow = 1.5;
-    this.lags.pumpFlow += (theoreticalFlow - this.lags.pumpFlow) / tauFlow;
-    this.pump.flow = Number(clamp(this.lags.pumpFlow + noise(0.05), 0.0, 16.0).toFixed(1));
+    // Restriction and condition throttle factor
+    const restrictionFactor = Math.max(0.0, (1 - this.pump.suction_restriction * 0.65) * (1 - this.pump.discharge_restriction * 0.55));
+    const conditionFactor = pumpCondition === 'worn_impeller' ? 0.82 : (pumpCondition === 'cavitating' ? 0.88 : 1.0);
 
-    // Hydraulic pressures
-    const pDischarge = this.pump.flow > 0.5 ? clamp(1.01 + (this.pump.flow / 10.0) * 1.79, 1.01, 3.80) : 1.01;
+    // Deterministic flow function: Q = (RPM / 2450) * 10.0 * factors L/min
+    const theoreticalFlow = targetRpm <= 0 ? 0.0 : (this.pump.rpm / 2450) * 10.0 * restrictionFactor * conditionFactor;
+    const tauFlow = 1.0;
+    this.lags.pumpFlow += (theoreticalFlow - this.lags.pumpFlow) / tauFlow;
+    const calcPumpFlow = this.pump.rpm <= 10 || this.lags.pumpFlow < 0.05 ? 0.0 : Number(clamp(this.lags.pumpFlow + (this.lags.pumpFlow > 0.5 ? noise(0.05) : 0), 0.0, 16.0).toFixed(1));
+    this.pump.flow = calcPumpFlow;
+
+    // Hydraulic pressures & head
+    const pDischarge = this.pump.flow > 0.1 ? clamp(1.01 + (this.pump.flow / 10.0) * 1.79 * (1 + this.pump.discharge_restriction * 0.35), 1.01, 3.80) : 1.01;
     this.pump.discharge_pressure = Number(pDischarge.toFixed(2));
-    this.pump.suction_pressure = Number((1.01 - (this.pump.flow / 10.0) * 0.08).toFixed(2));
+    this.pump.suction_pressure = Number((1.01 - (this.pump.flow / 10.0) * 0.08 - this.pump.suction_restriction * 0.25).toFixed(2));
+    
+    // Pump head (meters of fluid) = (ΔP bar * 1e5 Pa) / (ρ 1000 * g 9.81) = ΔP * 10.197
+    const deltaP = Math.max(0, this.pump.discharge_pressure - this.pump.suction_pressure);
+    this.pump.head = this.pump.flow > 0.1 ? Number((deltaP * 10.197).toFixed(1)) : 0.0;
+
+    // Pump hydraulic efficiency (%)
+    const effNom = 78.5;
+    const effCondition = pumpCondition === 'worn_impeller' ? 0.75 : (pumpCondition === 'cavitating' ? 0.82 : 1.0);
+    const calculatedEff = this.pump.flow > 0.1 
+      ? clamp(effNom * (this.pump.flow / 10.0) * (this.pump.rpm / 2450) * effCondition * (fault === 'early_pump_degradation' ? (1 - s * 0.2) : (fault === 'pump_fault' ? (1 - s * 0.5) : 1)), 10.0, 92.0)
+      : 0.0;
+    this.pump.efficiency = Number(calculatedEff.toFixed(1));
+
+    // Pump Shaft Power (kW) = (Q m3/s * ΔP Pa) / (η)
+    const qM3s = (this.pump.flow * 1e-3) / 60;
+    const deltaPPa = deltaP * 1e5;
+    const hydPowerWatts = qM3s * deltaPPa;
+    this.pump.power_kw = this.pump.flow > 0.1 ? Number((hydPowerWatts / Math.max(0.1, this.pump.efficiency / 100) / 1000).toFixed(2)) : 0.0;
 
     // Pump fluid temperatures
     this.pump.inlet_temperature = Number((25.2 + noise(0.1)).toFixed(1));
-    const pumpHeatGeneration = this.pump.flow > 0.5 ? 12.9 * (1.0 + (this.pump.vibration - 0.08) * 2.5) : 0.0;
+    const pumpHeatGeneration = this.pump.flow > 0.1 ? 12.9 * (1.0 + (this.pump.vibration - 0.08) * 2.5) : 0.0;
     this.pump.outlet_temperature = Number((this.pump.inlet_temperature + pumpHeatGeneration).toFixed(1));
-    this.pump.health = Math.max(0, Math.round(100 - (this.pump.vibration - 0.08) * 160));
-    this.pump.status = this.pump.vibration > 0.40 ? 'CRITICAL' : (this.pump.vibration > 0.20 ? 'WARNING' : 'RUNNING');
+    this.pump.health = this.pump.rpm === 0 ? 0 : Math.max(0, Math.round(100 - (this.pump.vibration - 0.08) * 160 - (this.pump.efficiency < 70 ? (70 - this.pump.efficiency) * 1.2 : 0)));
+    this.pump.status = (this.pump.rpm === 0 || this.pump.vibration > 0.40) ? 'CRITICAL' : (this.pump.vibration > 0.20 ? 'WARNING' : 'RUNNING');
 
     // -------------------------------------------------------------------------
     // 3. E-101 HEAT EXCHANGER CAUSAL DYNAMICS
     // -------------------------------------------------------------------------
-    // Determine inlet flow and temp from upstream connected unit in the process graph
     const isHxEnabled = this.processGraph?.nodes?.['E-101']?.enabled !== false;
     const hxUpstreamFlow = isHxEnabled ? this.pump.flow : 0.0;
     const hxInletTemp = this.pump.outlet_temperature;
 
-    const tauHxFlow = 2.0;
-    this.lags.hxFlow += (hxUpstreamFlow * 0.99 - this.lags.hxFlow) / tauHxFlow;
-    this.heatExchanger.flow = Number(clamp(this.lags.hxFlow, 0.0, 16.0).toFixed(1));
+    const tauHxFlow = 1.0;
+    this.lags.hxFlow += (hxUpstreamFlow - this.lags.hxFlow) / tauHxFlow;
+    const calcHxFlow = this.lags.hxFlow < 0.05 ? 0.0 : Number(clamp(this.lags.hxFlow, 0.0, 16.0).toFixed(1));
+    this.heatExchanger.flow = calcHxFlow;
+
+    const userFouling = this.userControls.fouling_level !== null ? this.userControls.fouling_level : (fault === 'heat_exchanger_fault' ? 70 : (fault === 'early_heat_exchanger_fouling' ? 35 : 0));
+    this.heatExchanger.fouling_level = userFouling;
+    this.heatExchanger.thermal_condition = this.userControls.thermal_condition || (userFouling > 50 ? 'severe_fouling' : (userFouling > 20 ? 'moderate_fouling' : 'clean'));
 
     const baseEff = this.userControls.heat_exchanger_efficiency !== null ? this.userControls.heat_exchanger_efficiency : 95.0;
-    let targetEff = baseEff;
+    let targetEff = baseEff * (1 - userFouling / 100 * 0.65);
     if (fault === 'early_heat_exchanger_fouling') {
-      targetEff = baseEff - s * (baseEff - 68.0);
+      targetEff = Math.min(targetEff, baseEff - s * (baseEff - 68.0));
     } else if (fault === 'heat_exchanger_fault') {
-      targetEff = baseEff - s * (baseEff - 28.0);
+      targetEff = Math.min(targetEff, baseEff - s * (baseEff - 28.0));
     }
 
     this.heatExchanger.efficiency += (targetEff - this.heatExchanger.efficiency) * 0.25;
     this.heatExchanger.efficiency = Number(clamp(this.heatExchanger.efficiency, 10.0, 100.0).toFixed(1));
 
     this.heatExchanger.inlet_temperature = hxInletTemp;
-    const deltaTNominal = this.heatExchanger.flow > 0.5 ? (12.9 * (this.heatExchanger.efficiency / 95.0) * Math.sqrt(this.heatExchanger.flow / 10.0)) : 0.0;
-    this.heatExchanger.temperature_difference += (deltaTNominal - this.heatExchanger.temperature_difference) * 0.35 + noise(0.08);
-    this.heatExchanger.temperature_difference = Number(clamp(this.heatExchanger.temperature_difference, 0.0, 25.0).toFixed(1));
+    const deltaTNominal = this.heatExchanger.flow > 0.1 ? (12.9 * (this.heatExchanger.efficiency / 95.0) * Math.sqrt(this.heatExchanger.flow / 10.0)) : 0.0;
+    this.heatExchanger.temperature_difference += (deltaTNominal - this.heatExchanger.temperature_difference) * 0.35 + (this.heatExchanger.flow > 0.1 ? noise(0.08) : 0);
+    this.heatExchanger.temperature_difference = this.heatExchanger.flow > 0.1 ? Number(clamp(this.heatExchanger.temperature_difference, 0.0, 25.0).toFixed(1)) : 0.0;
     this.heatExchanger.outlet_temperature = Number((this.heatExchanger.inlet_temperature - this.heatExchanger.temperature_difference).toFixed(1));
     this.heatExchanger.heat_transfer_indicator = this.heatExchanger.efficiency;
+    
+    // Heat Duty Q (kW) = m_dot * Cp * ΔT
+    const hxDuty = this.heatExchanger.flow > 0.1 ? (this.heatExchanger.flow / 60) * 4.184 * this.heatExchanger.temperature_difference : 0.0;
+    this.heatExchanger.heat_duty = Number(hxDuty.toFixed(2));
+    this.heatExchanger.overall_u = Number((850 * (this.heatExchanger.efficiency / 95.0)).toFixed(0));
+    this.heatExchanger.fouling_factor = Number((0.0001 + (100 - this.heatExchanger.efficiency) * 0.00005).toFixed(5));
+
     this.heatExchanger.health = Math.round(this.heatExchanger.efficiency);
     this.heatExchanger.status = this.heatExchanger.efficiency < 40.0 ? 'CRITICAL' : (this.heatExchanger.efficiency < 65.0 ? 'WARNING' : 'NORMAL');
 
     // -------------------------------------------------------------------------
     // 4. R-101 CSTR REACTOR CAUSAL DYNAMICS (Exothermic Kinetics)
     // -------------------------------------------------------------------------
-    // Determine inlet flow and temp from upstream connected unit in the process graph
     const isRxEnabled = this.processGraph?.nodes?.['R-101']?.enabled !== false;
     const rxUpstreamFlow = isRxEnabled ? this.heatExchanger.flow : 0.0;
     const rxInletTemp = this.heatExchanger.outlet_temperature;
 
-    const tauRxFlow = 2.4;
-    this.lags.reactorFlow += (rxUpstreamFlow * 0.99 - this.lags.reactorFlow) / tauRxFlow;
-    this.reactor.feed_flow = Number(clamp(this.lags.reactorFlow, 0.0, 16.0).toFixed(1));
+    const tauRxFlow = 1.0;
+    this.lags.reactorFlow += (rxUpstreamFlow - this.lags.reactorFlow) / tauRxFlow;
+    const calcRxFlow = this.lags.reactorFlow < 0.05 ? 0.0 : Number(clamp(this.lags.reactorFlow, 0.0, 16.0).toFixed(1));
+    this.reactor.feed_flow = calcRxFlow;
 
     let coolingActive = this.userControls.cooling_status !== null ? this.userControls.cooling_status : 1;
     if (fault === 'reactor_cooling_failure') {
@@ -613,47 +724,57 @@ export class ProcessSimulator {
     this.reactor.cooling_status = coolingActive;
 
     const baseAgitator = this.userControls.agitator_speed !== null ? this.userControls.agitator_speed : 350;
-    this.reactor.agitator_speed = Math.round(baseAgitator + noise(4));
+    this.reactor.agitator_speed = Math.round(baseAgitator + (this.reactor.feed_flow > 0.1 ? noise(4) : 0));
+    this.reactor.reaction_kinetics_mod = this.userControls.reaction_kinetics_mod || 1.0;
+
+    // Residence time tau (min) = V_tank (15 L) / feed_flow (L/min)
+    const tauResidence = this.reactor.feed_flow > 0.1 ? 15.0 / this.reactor.feed_flow : 15.0;
+    this.reactor.residence_time = Number(tauResidence.toFixed(2));
 
     // Arrhenius Kinetics with Feed Flow and Enthalpy Coupling
-    const kArrhenius = 0.045 * Math.exp(0.035 * (this.reactor.temperature - 65.0));
-    const qGen = this.reactor.feed_flow > 0.5 ? kArrhenius * 320.0 : 0.0;
-    const qCooling = coolingActive === 1 ? (this.reactor.feed_flow > 0.5 ? 320.0 * (this.reactor.temperature - 20.0) / 45.0 : 0.0) : 40.0;
+    const kArrhenius = 0.045 * Math.exp(0.035 * (this.reactor.temperature - 65.0)) * this.reactor.reaction_kinetics_mod;
+    const qGen = this.reactor.feed_flow > 0.1 ? kArrhenius * 320.0 : 0.0;
+    const qCooling = coolingActive > 0 ? (this.reactor.feed_flow > 0.1 ? 320.0 * coolingActive * (this.reactor.temperature - 20.0) / 45.0 : 0.0) : 40.0;
     const netHeat = qGen - qCooling;
 
-    // Upstream thermal effect from E-101
     const thermalEnthalpyEffect = (rxInletTemp - 25.2) * 0.22;
 
-    const targetRxTemp = this.reactor.feed_flow > 0.5
-      ? (coolingActive === 1 ? (65.0 + s * 12.0 + thermalEnthalpyEffect) : (65.0 + s * 34.0 + thermalEnthalpyEffect))
+    const targetRxTemp = this.reactor.feed_flow > 0.1
+      ? (coolingActive > 0 ? (65.0 + s * 12.0 + thermalEnthalpyEffect) : (88.0 + s * 24.0 + thermalEnthalpyEffect))
       : 25.0;
 
-    this.reactor.temperature += (targetRxTemp - this.reactor.temperature) * 0.25 + (this.reactor.feed_flow > 0.5 ? netHeat * 0.008 : 0) + noise(0.1);
+    this.reactor.temperature += (targetRxTemp - this.reactor.temperature) * 0.40 + (this.reactor.feed_flow > 0.1 && coolingActive === 0 ? 3.5 : 0) + (this.reactor.feed_flow > 0.1 ? noise(0.1) : 0);
     this.reactor.temperature = Number(clamp(this.reactor.temperature, 20.0, 115.0).toFixed(1));
 
     // Antoine vapor-liquid pressure
-    const antoineVaporP = Math.exp(10.2 - 2800 / (this.reactor.temperature + 273.15)) * 0.15;
-    const targetRxPress = this.reactor.feed_flow > 0.5 ? clamp(1.01 + antoineVaporP, 1.01, 5.0) : 1.01;
-    this.reactor.pressure += (targetRxPress - this.reactor.pressure) * 0.30 + noise(0.01);
+    const antoineVaporP = Math.exp(10.2 - 2800 / (this.reactor.temperature + 273.15)) * 0.18;
+    const targetRxPress = this.reactor.feed_flow > 0.1 ? clamp(1.01 + antoineVaporP + (this.reactor.temperature > 65 ? (this.reactor.temperature - 65) * 0.035 : 0), 1.01, 5.0) : 1.01;
+    this.reactor.pressure += (targetRxPress - this.reactor.pressure) * 0.40 + (this.reactor.feed_flow > 0.1 ? noise(0.01) : 0);
     this.reactor.pressure = Number(clamp(this.reactor.pressure, 1.01, 5.0).toFixed(2));
 
-    const nominalLevel = this.reactor.feed_flow > 0.2 ? clamp(50.0 + (this.reactor.feed_flow - 10.0) * 1.5, 20.0, 90.0) : 0.0;
+    // Chemical Conversion XA = 1 - 1/(1 + k*tau)
+    const conv = this.reactor.feed_flow > 0.1 ? clamp((1 - 1 / (1 + kArrhenius * this.reactor.residence_time * 6.5)) * 100, 5.0, 99.5) : 0.0;
+    this.reactor.conversion = Number(conv.toFixed(1));
+    this.reactor.heat_generation = Number((qGen * 0.02).toFixed(2));
+    this.reactor.heat_removal = Number((qCooling * 0.02).toFixed(2));
+
+    const nominalLevel = this.reactor.feed_flow > 0.1 ? clamp(50.0 + (this.reactor.feed_flow - 10.0) * 1.5, 20.0, 90.0) : 0.0;
     this.reactor.level += (nominalLevel - this.reactor.level) * 0.20;
     this.reactor.level = Number(clamp(this.reactor.level, 0.0, 100.0).toFixed(1));
-    this.reactor.health = Math.max(0, Math.round(100 - Math.max(0, this.reactor.temperature - 65.0) * 4));
+    this.reactor.health = Math.max(0, Math.round(100 - Math.max(0, this.reactor.temperature - 65.0) * 4 - (coolingActive === 0 ? 40 : 0)));
     this.reactor.status = this.reactor.temperature > 85.0 || this.reactor.cooling_status === 0 ? 'CRITICAL' : (this.reactor.temperature > 74.0 ? 'WARNING' : 'NORMAL');
 
     // -------------------------------------------------------------------------
     // 5. D-101 DISTILLATION COLUMN CAUSAL DYNAMICS
     // -------------------------------------------------------------------------
-    // Determine inlet flow and temp from upstream connected unit in the process graph
     const isDistEnabled = this.processGraph?.nodes?.['D-101']?.enabled !== false;
     const distUpstreamFlow = isDistEnabled ? this.reactor.feed_flow : 0.0;
     const distInletTemp = this.reactor.temperature;
 
-    const tauDistFlow = 2.4;
-    this.lags.distFlow += (distUpstreamFlow * 0.99 - this.lags.distFlow) / tauDistFlow;
-    this.distillation.feed_flow = Number(clamp(this.lags.distFlow, 0.0, 16.0).toFixed(1));
+    const tauDistFlow = 1.0;
+    this.lags.distFlow += (distUpstreamFlow - this.lags.distFlow) / tauDistFlow;
+    const calcDistFlow = this.lags.distFlow < 0.05 ? 0.0 : Number(clamp(this.lags.distFlow, 0.0, 16.0).toFixed(1));
+    this.distillation.feed_flow = calcDistFlow;
 
     const baseReflux = this.userControls.reflux_ratio !== null ? this.userControls.reflux_ratio : 1.85;
     let targetReflux = baseReflux;
@@ -663,28 +784,45 @@ export class ProcessSimulator {
       targetReflux = baseReflux - s * (baseReflux - 0.60);
     }
 
-    this.distillation.reflux_ratio += (targetReflux - this.distillation.reflux_ratio) * 0.35 + noise(0.02);
+    this.distillation.reflux_ratio += (targetReflux - this.distillation.reflux_ratio) * 0.35 + (this.distillation.feed_flow > 0.1 ? noise(0.02) : 0);
     this.distillation.reflux_ratio = Number(clamp(this.distillation.reflux_ratio, 0.35, 4.0).toFixed(2));
+
+    this.distillation.reboiler_duty_mod = this.userControls.reboiler_duty_mod !== null ? this.userControls.reboiler_duty_mod : 100;
+    this.distillation.column_pressure_setpoint = this.userControls.column_pressure_setpoint !== null ? this.userControls.column_pressure_setpoint : 2.10;
 
     const refluxLossEffect = (1.85 - this.distillation.reflux_ratio) * 6.5;
     const rxTempThermalEffect = (distInletTemp - 65.0) * 0.18;
+    const reboilerEffect = (this.distillation.reboiler_duty_mod - 100) * 0.08;
 
-    const nomTopTemp = this.distillation.feed_flow > 0.5 ? (76.5 + refluxLossEffect + rxTempThermalEffect) : 25.0;
-    const nomBottomTemp = this.distillation.feed_flow > 0.5 ? (98.4 + (distInletTemp - 65.0) * 0.12) : 25.0;
-    const nomColPress = this.distillation.feed_flow > 0.5 ? (2.10 + refluxLossEffect * 0.55 + rxTempThermalEffect * 0.03) : 1.01;
+    const nomTopTemp = this.distillation.feed_flow > 0.1 ? (76.5 + refluxLossEffect + rxTempThermalEffect + reboilerEffect * 0.5) : 25.0;
+    const nomBottomTemp = this.distillation.feed_flow > 0.1 ? (98.4 + (distInletTemp - 65.0) * 0.12 + reboilerEffect) : 25.0;
+    const nomColPress = this.distillation.feed_flow > 0.1 ? (this.distillation.column_pressure_setpoint + refluxLossEffect * 0.55 + rxTempThermalEffect * 0.03) : 1.01;
 
-    this.distillation.top_temperature += (nomTopTemp - this.distillation.top_temperature) * 0.35 + (this.distillation.feed_flow > 0.5 ? noise(0.1) : 0);
-    this.distillation.bottom_temperature += (nomBottomTemp - this.distillation.bottom_temperature) * 0.30 + (this.distillation.feed_flow > 0.5 ? noise(0.08) : 0);
-    this.distillation.pressure += (nomColPress - this.distillation.pressure) * 0.35 + (this.distillation.feed_flow > 0.5 ? noise(0.015) : 0);
+    this.distillation.top_temperature += (nomTopTemp - this.distillation.top_temperature) * 0.35 + (this.distillation.feed_flow > 0.1 ? noise(0.1) : 0);
+    this.distillation.bottom_temperature += (nomBottomTemp - this.distillation.bottom_temperature) * 0.30 + (this.distillation.feed_flow > 0.1 ? noise(0.08) : 0);
+    this.distillation.pressure += (nomColPress - this.distillation.pressure) * 0.35 + (this.distillation.feed_flow > 0.1 ? noise(0.015) : 0);
 
     this.distillation.top_temperature = Number(clamp(this.distillation.top_temperature, 20.0, 98.0).toFixed(1));
     this.distillation.bottom_temperature = Number(clamp(this.distillation.bottom_temperature, 20.0, 118.0).toFixed(1));
     this.distillation.pressure = Number(clamp(this.distillation.pressure, 1.01, 4.00).toFixed(2));
 
-    const nominalDistLevel = this.distillation.feed_flow > 0.2 ? clamp(52.0 + (this.distillation.feed_flow - 10.0) * 1.2, 20.0, 85.0) : 0.0;
+    const distFlowRate = this.distillation.feed_flow > 0.05 ? Number((this.distillation.feed_flow * 0.45).toFixed(1)) : 0.0;
+    const refluxFlowRate = Number((distFlowRate * this.distillation.reflux_ratio).toFixed(1));
+    const bottomsFlowRate = this.distillation.feed_flow > 0.05 ? Number((this.distillation.feed_flow * 0.53).toFixed(1)) : 0.0;
+
+    this.distillation.distillate_flow = distFlowRate;
+    this.distillation.reflux_flow = refluxFlowRate;
+    this.distillation.bottoms_flow = bottomsFlowRate;
+
+    // Distillation calculated duties & separation purity
+    this.distillation.reboiler_duty = this.distillation.feed_flow > 0.1 ? Number(((bottomsFlowRate / 60) * 4.184 * Math.max(0, this.distillation.bottom_temperature - 65.0) * (this.distillation.reboiler_duty_mod / 100)).toFixed(2)) : 0.0;
+    this.distillation.condenser_duty = this.distillation.feed_flow > 0.1 ? Number(((distFlowRate * (1 + this.distillation.reflux_ratio) / 60) * 2260 * 0.015).toFixed(2)) : 0.0;
+    this.distillation.separation_purity = this.distillation.feed_flow > 0.1 ? Number(clamp(98.5 - Math.max(0, 1.85 - this.distillation.reflux_ratio) * 18.0 - Math.max(0, this.distillation.top_temperature - 76.5) * 1.5, 40.0, 99.9).toFixed(1)) : 0.0;
+
+    const nominalDistLevel = this.distillation.feed_flow > 0.1 ? clamp(52.0 + (this.distillation.feed_flow - 10.0) * 1.2, 20.0, 85.0) : 0.0;
     this.distillation.level += (nominalDistLevel - this.distillation.level) * 0.25;
     this.distillation.level = Number(clamp(this.distillation.level, 0.0, 100.0).toFixed(1));
-    this.distillation.health = Math.max(0, Math.round(100 - (this.distillation.reflux_ratio < 1.85 ? (1.85 - this.distillation.reflux_ratio) * 80 : 0)));
+    this.distillation.health = Math.max(0, Math.round(100 - (this.distillation.reflux_ratio < 1.85 ? (1.85 - this.distillation.reflux_ratio) * 80 : 0) - (this.distillation.top_temperature > 80 ? (this.distillation.top_temperature - 80) * 3 : 0)));
     this.distillation.status = this.distillation.reflux_ratio < 0.75 && this.distillation.feed_flow > 1.0 ? 'CRITICAL' : (this.distillation.reflux_ratio < 1.15 && this.distillation.feed_flow > 1.0 ? 'WARNING' : 'NORMAL');
 
     // -------------------------------------------------------------------------
@@ -695,41 +833,43 @@ export class ProcessSimulator {
         if (conn.from === 'P-101') conn.flow = this.pump.flow;
         else if (conn.from === 'E-101') conn.flow = this.heatExchanger.flow;
         else if (conn.from === 'R-101') conn.flow = this.reactor.feed_flow;
-        else if (conn.from === 'D-101') conn.flow = Number((this.distillation.feed_flow * 0.45).toFixed(1));
+        else if (conn.from === 'D-101') conn.flow = this.distillation.distillate_flow;
       });
     }
 
     if (this.processGraph?.nodes) {
       const nodes = this.processGraph.nodes;
       if (nodes['P-101']) {
-        nodes['P-101'].parameters = { rpm: this.pump.rpm, vibration: this.pump.vibration, flow: this.pump.flow };
+        nodes['P-101'].parameters = { rpm: this.pump.rpm, vibration: this.pump.vibration, flow: this.pump.flow, head: this.pump.head, efficiency: this.pump.efficiency };
       }
       if (nodes['E-101']) {
-        nodes['E-101'].parameters = { efficiency: this.heatExchanger.efficiency, deltaT: this.heatExchanger.temperature_difference, outletTemp: this.heatExchanger.outlet_temperature };
+        nodes['E-101'].parameters = { efficiency: this.heatExchanger.efficiency, deltaT: this.heatExchanger.temperature_difference, outletTemp: this.heatExchanger.outlet_temperature, heatDuty: this.heatExchanger.heat_duty };
       }
       if (nodes['R-101']) {
-        nodes['R-101'].parameters = { temperature: this.reactor.temperature, pressure: this.reactor.pressure, cooling: this.reactor.cooling_status, agitatorSpeed: this.reactor.agitator_speed };
+        nodes['R-101'].parameters = { temperature: this.reactor.temperature, pressure: this.reactor.pressure, cooling: this.reactor.cooling_status, agitatorSpeed: this.reactor.agitator_speed, conversion: this.reactor.conversion };
       }
       if (nodes['D-101']) {
-        nodes['D-101'].parameters = { refluxRatio: this.distillation.reflux_ratio, topTemp: this.distillation.top_temperature, bottomTemp: this.distillation.bottom_temperature, pressure: this.distillation.pressure };
+        nodes['D-101'].parameters = { refluxRatio: this.distillation.reflux_ratio, topTemp: this.distillation.top_temperature, bottomTemp: this.distillation.bottom_temperature, pressure: this.distillation.pressure, purity: this.distillation.separation_purity };
       }
 
       // Causal fault role attribution: PRIMARY FAULT vs DOWNSTREAM EFFECT
-      if (fault === 'pump_fault' || fault === 'early_pump_degradation' || (this.pump.health < 80 && this.pump.health < this.heatExchanger.health)) {
-        if (nodes['P-101']) nodes['P-101'].role = this.pump.health < 50 ? 'PRIMARY_FAULT' : 'PRIMARY_DEGRADATION';
-        if (nodes['E-101']) nodes['E-101'].role = 'DOWNSTREAM_EFFECT';
-        if (nodes['R-101']) nodes['R-101'].role = 'DOWNSTREAM_EFFECT';
-        if (nodes['D-101']) nodes['D-101'].role = 'DOWNSTREAM_EFFECT';
+      const pumpIsPrimary = fault === 'pump_fault' || fault === 'early_pump_degradation' || (this.pump.health < 80 && this.pump.health < this.heatExchanger.health) || this.pump.rpm < 1200 || this.pump.flow < 2.0;
+
+      if (pumpIsPrimary) {
+        if (nodes['P-101']) nodes['P-101'].role = (this.pump.health < 50 || this.pump.rpm < 800) ? 'PRIMARY_FAULT' : 'PRIMARY_DEGRADATION';
+        if (nodes['E-101']) nodes['E-101'].role = 'DOWNSTREAM_IMPACT';
+        if (nodes['R-101']) nodes['R-101'].role = 'DOWNSTREAM_IMPACT';
+        if (nodes['D-101']) nodes['D-101'].role = 'DOWNSTREAM_IMPACT';
       } else if (fault === 'heat_exchanger_fault' || fault === 'early_heat_exchanger_fouling' || (this.heatExchanger.health < 80 && this.heatExchanger.health < this.reactor.health)) {
         if (nodes['P-101']) nodes['P-101'].role = 'PRIMARY_SOURCE';
         if (nodes['E-101']) nodes['E-101'].role = this.heatExchanger.health < 50 ? 'PRIMARY_FAULT' : 'PRIMARY_DEGRADATION';
-        if (nodes['R-101']) nodes['R-101'].role = 'DOWNSTREAM_EFFECT';
-        if (nodes['D-101']) nodes['D-101'].role = 'DOWNSTREAM_EFFECT';
+        if (nodes['R-101']) nodes['R-101'].role = 'DOWNSTREAM_IMPACT';
+        if (nodes['D-101']) nodes['D-101'].role = 'DOWNSTREAM_IMPACT';
       } else if (fault === 'reactor_cooling_failure' || fault === 'early_reactor_cooling_degradation' || (this.reactor.health < 80 && this.reactor.health < this.distillation.health)) {
         if (nodes['P-101']) nodes['P-101'].role = 'PRIMARY_SOURCE';
         if (nodes['E-101']) nodes['E-101'].role = 'NOMINAL';
         if (nodes['R-101']) nodes['R-101'].role = this.reactor.health < 50 ? 'PRIMARY_FAULT' : 'PRIMARY_DEGRADATION';
-        if (nodes['D-101']) nodes['D-101'].role = 'DOWNSTREAM_EFFECT';
+        if (nodes['D-101']) nodes['D-101'].role = 'DOWNSTREAM_IMPACT';
       } else if (fault === 'distillation_fault' || fault === 'early_distillation_reflux_loss' || this.distillation.health < 80) {
         if (nodes['P-101']) nodes['P-101'].role = 'PRIMARY_SOURCE';
         if (nodes['E-101']) nodes['E-101'].role = 'NOMINAL';
@@ -749,7 +889,7 @@ export class ProcessSimulator {
     this.streams = this.calculateStreams();
 
     // -------------------------------------------------------------------------
-    // 7. INTELLIGENT ALERT ENGINE EVALUATION
+    // 8. INTELLIGENT ALERT ENGINE EVALUATION
     // -------------------------------------------------------------------------
     this.evaluateIntelligentAlerts();
 
@@ -1013,6 +1153,7 @@ export class ProcessSimulator {
     const tPumpIn = this.pump.inlet_temperature;
     const tPumpOut = this.pump.outlet_temperature;
     const pPumpOut = this.pump.discharge_pressure;
+    const pPumpIn = this.pump.suction_pressure;
 
     const tHxOut = this.heatExchanger.outlet_temperature;
     const pHxOut = Number(clamp(pPumpOut - 0.35, 1.01, 3.50).toFixed(2));
@@ -1029,62 +1170,88 @@ export class ProcessSimulator {
     const refluxReturnFlow = Number((topProductFlow * reflux).toFixed(1));
     const bottomProductFlow = Number((qPump * 0.53).toFixed(1));
 
+    const calcStreamStatus = (flow, nominal) => {
+      if (flow < 0.1) return 'NO_FLOW';
+      const dev = Math.abs((flow - nominal) / nominal);
+      if (dev > 0.30) return 'ABNORMAL';
+      if (dev > 0.10) return 'REDUCED';
+      return 'NORMAL';
+    };
+
     return {
       stream_1: {
         id: '01',
+        tag: 'S-100',
         name: 'Water Source Feed',
-        from: 'Raw Water Tank',
-        to: 'P-101 Centrifugal Pump',
+        from: 'Feed Tank',
+        to: 'P-101',
         flow: qPump,
         temperature: tPumpIn,
-        pressure: this.pump.suction_pressure
+        pressure: pPumpIn,
+        status: calcStreamStatus(qPump, 10.0),
+        flow_deviation: Number((((qPump - 10.0) / 10.0) * 100).toFixed(1))
       },
       stream_2: {
         id: '02',
-        name: 'Pump Discharge Stream',
-        from: 'P-101 Centrifugal Pump',
-        to: 'E-101 Shell & Tube Exchanger',
+        tag: 'S-101',
+        name: 'Pump Discharge Train',
+        from: 'P-101',
+        to: 'E-101',
         flow: Number((qPump * 0.99).toFixed(1)),
         temperature: tPumpOut,
-        pressure: pPumpOut
+        pressure: pPumpOut,
+        status: calcStreamStatus(qPump * 0.99, 9.9),
+        flow_deviation: Number((((qPump * 0.99 - 9.9) / 9.9) * 100).toFixed(1))
       },
       stream_3: {
         id: '03',
+        tag: 'S-102',
         name: 'Conditioned Exchanger Effluent',
-        from: 'E-101 Heat Exchanger',
-        to: 'R-101 CSTR Reactor',
+        from: 'E-101',
+        to: 'R-101',
         flow: Number((this.heatExchanger.flow * 0.99).toFixed(1)),
         temperature: tHxOut,
-        pressure: pHxOut
+        pressure: pHxOut,
+        status: calcStreamStatus(this.heatExchanger.flow * 0.99, 9.8),
+        flow_deviation: Number((((this.heatExchanger.flow * 0.99 - 9.8) / 9.8) * 100).toFixed(1))
       },
       stream_4: {
         id: '04',
+        tag: 'S-103',
         name: 'Reactor Reaction Effluent',
-        from: 'R-101 CSTR Reactor',
-        to: 'D-101 Binary Distillation Column',
+        from: 'R-101',
+        to: 'D-101',
         flow: Number((this.reactor.feed_flow * 0.99).toFixed(1)),
         temperature: tReactor,
-        pressure: pReactor
+        pressure: pReactor,
+        status: calcStreamStatus(this.reactor.feed_flow * 0.99, 9.7),
+        flow_deviation: Number((((this.reactor.feed_flow * 0.99 - 9.7) / 9.7) * 100).toFixed(1))
       },
       stream_5: {
         id: '05',
-        name: 'Overhead Distillate & Reflux Loop',
-        from: 'D-101 Overhead Condenser',
-        to: 'Product Tank / Reflux Return',
+        tag: 'S-104',
+        name: 'Top Distillate Product & Reflux Loop',
+        from: 'D-101',
+        to: 'Distillate Receiver',
         flow: topProductFlow,
         temperature: tTop,
         pressure: pDist,
         reflux_ratio: reflux,
-        reflux_flow: refluxReturnFlow
+        reflux_flow: refluxReturnFlow,
+        status: calcStreamStatus(topProductFlow, 4.5),
+        flow_deviation: Number((((topProductFlow - 4.5) / 4.5) * 100).toFixed(1))
       },
       stream_6: {
         id: '06',
+        tag: 'S-105',
         name: 'Column Bottoms Product',
-        from: 'D-101 Column Reboiler',
+        from: 'D-101',
         to: 'Bottoms Storage',
         flow: bottomProductFlow,
         temperature: tBottom,
-        pressure: Number((pDist + 0.15).toFixed(2))
+        pressure: Number((pDist + 0.15).toFixed(2)),
+        status: calcStreamStatus(bottomProductFlow, 5.3),
+        flow_deviation: Number((((bottomProductFlow - 5.3) / 5.3) * 100).toFixed(1))
       }
     };
   }
@@ -1105,8 +1272,14 @@ export class ProcessSimulator {
       flow: 10.0,
       suction_pressure: 1.01,
       discharge_pressure: 2.80,
+      head: 18.25,
+      efficiency: 78.5,
+      power_kw: 0.12,
       inlet_temperature: 25.2,
       outlet_temperature: 38.1,
+      suction_restriction: 0,
+      discharge_restriction: 0,
+      pump_condition: 'normal',
       health: 100
     };
 
@@ -1114,6 +1287,11 @@ export class ProcessSimulator {
       status: 'NORMAL',
       flow: 9.9,
       efficiency: 95.0,
+      heat_duty: 8.92,
+      overall_u: 850,
+      fouling_factor: 0.0001,
+      fouling_level: 0,
+      thermal_condition: 'clean',
       inlet_temperature: 25.2,
       outlet_temperature: 38.1,
       temperature_difference: 12.9,
@@ -1129,6 +1307,11 @@ export class ProcessSimulator {
       level: 50.0,
       agitator_speed: 350,
       cooling_status: 1,
+      residence_time: 1.53,
+      conversion: 84.5,
+      heat_generation: 5.4,
+      heat_removal: 5.2,
+      reaction_kinetics_mod: 1.0,
       health: 100
     };
 
@@ -1140,6 +1323,14 @@ export class ProcessSimulator {
       pressure: 2.10,
       level: 52.0,
       reflux_ratio: 1.85,
+      reflux_flow: 8.08,
+      distillate_flow: 4.37,
+      bottoms_flow: 5.14,
+      reboiler_duty: 12.4,
+      condenser_duty: 11.8,
+      separation_purity: 98.2,
+      reboiler_duty_mod: 100,
+      column_pressure_setpoint: 2.10,
       health: 100
     };
 

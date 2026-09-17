@@ -115,32 +115,39 @@ export interface AlertItem {
 }
 
 export interface ProcessStream {
-  id: string; // "01", "02", "03", "04", "05", "06"
+  id: string; // "01", "02", "03", "04", "05", "06", "S-100", etc.
+  tag?: string; // "S-100", "S-101", "S-102", "S-103", "S-104", "S-105", "S-106"
   name: string;
   from: string;
   to: string;
-  flow: number; // L/min
+  flow?: number; // L/min
+  flow_rate?: number; // L/min
   temperature: number; // °C
   pressure: number; // bar
+  status?: 'nominal' | 'warning' | 'critical' | 'NORMAL' | 'REDUCED' | 'ABNORMAL' | 'NO_FLOW' | string;
+  flow_deviation?: number; // %
   reflux_ratio?: number;
   reflux_flow?: number; // L/min
+  composition?: Record<string, number>;
 }
 
-export interface ProcessStreams {
-  stream_1: ProcessStream;
-  stream_2: ProcessStream;
-  stream_3: ProcessStream;
-  stream_4: ProcessStream;
-  stream_5: ProcessStream;
-  stream_6: ProcessStream;
-}
+export type ProcessStreams = ProcessStream[] | Record<string, ProcessStream>;
+
 
 export interface ManualControlOverrides {
   pump_rpm?: number | null;
+  suction_restriction?: number | null;
+  discharge_restriction?: number | null;
+  pump_condition?: string | null;
   heat_exchanger_efficiency?: number | null;
+  fouling_level?: number | null;
+  thermal_condition?: string | null;
   cooling_status?: number | null;
-  reflux_ratio?: number | null;
   agitator_speed?: number | null;
+  reaction_kinetics_mod?: number | null;
+  reflux_ratio?: number | null;
+  reboiler_duty_mod?: number | null;
+  column_pressure_setpoint?: number | null;
 }
 
 export type ProcessNodeRole =
@@ -199,9 +206,18 @@ export interface PumpData {
   rpm: number;
   vibration: number;
   flow?: number; // L/min
+  flow_rate?: number; // L/min
   inlet_temperature: number;
   outlet_temperature: number;
   pressure?: number; // bar
+  discharge_pressure?: number;
+  suction_pressure?: number;
+  head?: number; // m
+  efficiency?: number; // %
+  power_kw?: number; // kW
+  suction_restriction?: number;
+  discharge_restriction?: number;
+  pump_condition?: string;
   status?: string;
   health?: number;
   source?: SourceType;
@@ -209,11 +225,21 @@ export interface PumpData {
 
 export interface HeatExchangerData {
   flow?: number; // L/min
+  flow_rate?: number;
   inlet_temperature: number;
   outlet_temperature: number;
+  temp_in?: number;
+  temp_out?: number;
   temperature_difference: number;
+  delta_t?: number;
+  delta_p?: number;
   heat_transfer_indicator: number;
   efficiency?: number; // %
+  heat_duty?: number; // kW
+  overall_u?: number; // W/(m2*K)
+  fouling_factor?: number; // m2*K/W
+  fouling_level?: number; // %
+  thermal_condition?: string | number;
   status?: string;
   health?: number;
   source?: SourceType;
@@ -225,8 +251,14 @@ export interface ReactorData {
   level: number;
   agitator_speed: number;
   cooling_status: number;
+  cooling_flow?: number;
   feed_flow?: number;
   feed_temperature?: number;
+  residence_time?: number; // min
+  conversion?: number; // %
+  heat_generation?: number; // kW
+  heat_removal?: number; // kW
+  reaction_kinetics_mod?: number;
   status?: string;
   health?: number;
 }
@@ -235,13 +267,20 @@ export interface DistillationData {
   top_temperature: number;
   bottom_temperature: number;
   pressure: number;
+  column_pressure?: number;
   level: number;
+  bottoms_level?: number;
   reflux_ratio: number;
   feed_flow?: number;
   feed_temperature?: number;
   distillate_flow?: number;
   reflux_flow?: number;
   bottoms_flow?: number;
+  reboiler_duty?: number; // kW
+  condenser_duty?: number; // kW
+  separation_purity?: number; // %
+  reboiler_duty_mod?: number; // %
+  column_pressure_setpoint?: number; // bar
   status?: string;
   health?: number;
 }
@@ -379,6 +418,66 @@ export interface CausalPropagationData {
   downstreamConsequences: Array<{ unit: string; impact: string }>;
 }
 
+export interface EquipmentDiagnosticItem {
+  equipmentId: string;
+  tag: string;
+  name: string;
+  anomalyScore: number;
+  anomaly: boolean;
+  faultClass: string;
+  faultLabel: string;
+  faultProbability: number;
+  probabilities?: Record<string, number>;
+  isUnknownFault?: boolean;
+  health: number;
+  risk: number;
+  state: string;
+  stage: string;
+  stageLabel: string;
+  severity: SeverityLevel;
+  color: string;
+  trend: 'stable' | 'degrading' | 'improving' | string;
+  persistenceTicks: number;
+  role: 'PRIMARY_FAULT' | 'PRIMARY_SOURCE' | 'DOWNSTREAM_IMPACT' | 'NOMINAL' | string;
+  evidence: string[];
+  baseline: Record<string, number>;
+  current: Record<string, number>;
+  deviations: Record<string, number>;
+  ratesOfChange: Record<string, number>;
+  sensorReliability: {
+    score: number;
+    isReliable: boolean;
+    source: string;
+  };
+  processImpact: {
+    upstream: string;
+    currentUnit: string;
+    downstream: string;
+  };
+  lastUpdated: string;
+}
+
+export interface EquipmentDiagnosticsMap {
+  P101: EquipmentDiagnosticItem;
+  E101: EquipmentDiagnosticItem;
+  R101: EquipmentDiagnosticItem;
+  D101: EquipmentDiagnosticItem;
+  pump?: EquipmentDiagnosticItem;
+  heat_exchanger?: EquipmentDiagnosticItem;
+  reactor?: EquipmentDiagnosticItem;
+  distillation?: EquipmentDiagnosticItem;
+  plant?: {
+    health: number;
+    stage: string;
+    stageLabel: string;
+    severity: SeverityLevel;
+    color: string;
+    primarySource: string;
+    activeUnitsCount: number;
+    lastUpdated: string;
+  };
+}
+
 export interface TimelineEventItem {
   id: number;
   time: string;
@@ -414,6 +513,9 @@ export interface ProcessUpdatePayload {
   alert_summary?: AlertSummary;
   alarms?: any[];
   diagnosis: Diagnosis;
+  // CONTINUOUS PLANT-WIDE EQUIPMENT ML MONITOR STATE (SINGLE SOURCE OF TRUTH)
+  equipment_diagnostics?: EquipmentDiagnosticsMap;
+  equipmentDiagnostics?: EquipmentDiagnosticsMap;
   // Continuous Early Fault & Health Data
   process_health?: ProcessHealthData;
   equipment_health?: EquipmentHealthMap;
@@ -696,5 +798,43 @@ export interface ProcessHistoryPoint {
   dist_pressure: number;
   dist_reflux: number;
 }
+
+// ==========================================
+// PFD FLOWSHEET, TELEMETRY & SIMULATION TYPES
+// ==========================================
+
+export interface ManualControlOverrides {
+  pump_rpm?: number;
+  suction_restriction?: number;
+  discharge_restriction?: number;
+  pump_condition?: string;
+  heat_exchanger_efficiency?: number;
+  fouling_level?: number;
+  thermal_condition?: string;
+  cooling_status?: number;
+  reactor_cooling_flow?: number;
+  agitator_speed?: number;
+  agitator_speed_rpm?: number;
+  reaction_kinetics_mod?: number;
+  reflux_ratio?: number;
+  reboiler_duty_mod?: number;
+  column_pressure_setpoint?: number;
+}
+
+export interface TelemetryData {
+  active_scenario?: string;
+  timestamp?: string;
+  overall_health?: {
+    health_index?: number;
+    overall_status?: 'nominal' | 'warning' | 'critical';
+  };
+  pump?: PumpData;
+  heat_exchanger?: HeatExchangerData;
+  reactor?: ReactorData;
+  distillation?: DistillationData;
+  streams?: ProcessStream[];
+}
+
+
 
 
