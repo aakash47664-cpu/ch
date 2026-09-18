@@ -33,7 +33,6 @@ import {
   Flame,
   Cpu,
   RotateCcw,
-  Info,
   Sliders,
   Calendar,
   ShieldAlert,
@@ -293,18 +292,6 @@ export const IntermittentFaultsWorkspace: React.FC<IntermittentFaultsWorkspacePr
         </div>
       </div>
 
-      {/* 2. WHY THIS MATTERS (NOVELTY STATEMENT) */}
-      <div className="if-novelty-card">
-        <div className="if-novelty-icon">
-          <Info size={16} />
-        </div>
-        <div className="if-novelty-content">
-          <span className="if-novelty-title">WHY THIS MATTERS</span>
-          <p className="if-novelty-text">
-            ChemDiag preserves short-duration abnormal events even when they occur only once, then uses temporal history to determine whether later events form a sporadic, intermittent, or recurrent pattern.
-          </p>
-        </div>
-      </div>
 
       {/* 2b. NON-REPEATABLE WARNING ALERT BANNER */}
       {hasNonRepeatableEvent && (

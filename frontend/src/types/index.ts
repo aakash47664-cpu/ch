@@ -243,6 +243,9 @@ export interface HeatExchangerData {
   status?: string;
   health?: number;
   source?: SourceType;
+  sensor_status?: 'LIVE' | 'ONLINE' | 'WAITING' | 'OFFLINE';
+  has_real_sensor?: boolean;
+  sensor_last_seen?: number | null;
 }
 
 export interface ReactorData {

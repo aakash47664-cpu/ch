@@ -121,9 +121,31 @@ export const HeatExchangerWorkspace: React.FC<HeatExchangerWorkspaceProps> = ({
         </div>
 
         <div className="metric-card">
-          <span className="metric-card-label">Process Outlet Temp (Tout)</span>
+          <div className="flex items-center justify-between">
+            <span className="metric-card-label">Process Outlet Temp (Tout)</span>
+            {hxData.source === 'real' || hxData.has_real_sensor || hxData.sensor_status === 'LIVE' ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-600 border border-emerald-500/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                LIVE
+              </span>
+            ) : hxData.sensor_status === 'OFFLINE' ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium tracking-wide uppercase bg-rose-500/10 text-rose-600 border border-rose-500/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                OFFLINE
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium tracking-wide text-slate-500 bg-slate-100 border border-slate-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                Waiting for sensor...
+              </span>
+            )}
+          </div>
           <span className="metric-card-value font-mono">{tempOut.toFixed(1)} <span className="unit">°C</span></span>
-          <span className="metric-card-sub">Target Setpoint: 45.0 °C</span>
+          <span className="metric-card-sub">
+            {hxData.source === 'real' || hxData.has_real_sensor || hxData.sensor_status === 'LIVE'
+              ? 'Real Sensor: DS18B20 (ESP32 GPIO 4)'
+              : 'Target Setpoint: 45.0 °C'}
+          </span>
         </div>
 
         <div className="metric-card">

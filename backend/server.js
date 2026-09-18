@@ -44,7 +44,11 @@ const hardwareState = {
   outlet_temperature: 38.0,
   vibration: 0.08,
   rpm: 2450,
-  source: 'demo'
+  source: 'demo',
+  // Dedicated E-101 Heat Exchanger DS18B20 tracking
+  hxLastSeen: 0,
+  hx_outlet_temperature: null,
+  hxConnected: false
 };
 
 // Operator approval state for current session
@@ -214,11 +218,13 @@ function broadcast(payload) {
 // Helper to construct the unified state package
 function buildBroadcastPayload() {
   const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
+  const isHxHardwareOnline = hardwareState.hxLastSeen > 0 && (Date.now() - hardwareState.hxLastSeen < hardwareState.timeoutMs);
+  const hasRealHxTemp = isHxHardwareOnline && hardwareState.hx_outlet_temperature !== null;
   const simState = simulator.getState();
 
   const activeFault = simulator.getFault();
   const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
-  const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
+  const useRealExchanger = (hasRealHxTemp || isHardwareOnline) && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
 
   const pumpData = useRealPump ? {
     rpm: hardwareState.rpm,
@@ -232,17 +238,24 @@ function buildBroadcastPayload() {
     source: 'demo'
   };
 
-  const heatExchangerData = useRealExchanger ? {
-    inlet_temperature: hardwareState.inlet_temperature,
-    outlet_temperature: hardwareState.outlet_temperature,
-    temperature_difference: Number(Math.abs(hardwareState.outlet_temperature - hardwareState.inlet_temperature).toFixed(1)),
-    heat_transfer_indicator: 92.0,
-    efficiency: 92.0,
-    status: simState.heatExchanger.status,
-    source: 'real'
-  } : {
+  // E-101 Heat Exchanger: Replace ONLY the simulated outlet_temperature with REAL DS18B20 sensor data from ESP32
+  const hxOutletTemp = hasRealHxTemp
+    ? hardwareState.hx_outlet_temperature
+    : (useRealExchanger && hardwareState.outlet_temperature ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature);
+  const hxInletTemp = simState.heatExchanger.inlet_temperature;
+  const hxDeltaT = Number(Math.abs(hxOutletTemp - hxInletTemp).toFixed(1));
+  const hxSource = hasRealHxTemp ? 'real' : (useRealExchanger && hardwareState.source === 'real' ? 'real' : 'demo');
+  const hxSensorStatus = hasRealHxTemp ? 'LIVE' : (hardwareState.hxLastSeen === 0 ? 'WAITING' : 'OFFLINE');
+
+  const heatExchangerData = {
     ...simState.heatExchanger,
-    source: 'demo'
+    outlet_temperature: Number(hxOutletTemp.toFixed(1)),
+    inlet_temperature: hxInletTemp,
+    temperature_difference: hxDeltaT,
+    source: hxSource,
+    sensor_status: hxSensorStatus,
+    has_real_sensor: hasRealHxTemp,
+    sensor_last_seen: hardwareState.hxLastSeen || null
   };
 
   return {
@@ -268,7 +281,7 @@ function buildBroadcastPayload() {
         id: 'heat_exchanger',
         name: 'Heat Exchanger (Shell & Tube)',
         source: heatExchangerData.source,
-        source_label: useRealExchanger ? 'REAL DATA' : 'DEMO / SIMULATED',
+        source_label: hasRealHxTemp || (useRealExchanger && heatExchangerData.source === 'real') ? 'REAL DATA' : 'DEMO / SIMULATED',
         data: heatExchangerData
       },
       reactor: {
@@ -279,7 +292,7 @@ function buildBroadcastPayload() {
         data: {
           ...simState.reactor,
           feed_flow: simState.pump.flow,
-          feed_temperature: simState.heatExchanger.outlet_temperature
+          feed_temperature: heatExchangerData.outlet_temperature
         }
       },
       distillation: {
@@ -347,9 +360,18 @@ setInterval(async () => {
     const faultSeverity = simulator.getFaultSeverity();
     const faultTicks = simulator.getFaultTicks();
 
+    const isHxHardwareOnline = hardwareState.hxLastSeen > 0 && (Date.now() - hardwareState.hxLastSeen < hardwareState.timeoutMs);
+    const hasRealHxTemp = isHxHardwareOnline && hardwareState.hx_outlet_temperature !== null;
+
     const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
-    const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
+    const useRealExchanger = (hasRealHxTemp || isHardwareOnline) && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
     const simState = simulator.getState();
+
+    const hxOutletTemp = hasRealHxTemp
+      ? hardwareState.hx_outlet_temperature
+      : (useRealExchanger && hardwareState.outlet_temperature ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature);
+    const hxInletTemp = simState.heatExchanger.inlet_temperature;
+    const hxDeltaT = Number(Math.abs(hxOutletTemp - hxInletTemp).toFixed(1));
 
     // 2. Assemble process telemetry vector
     const telemetryVector = {
@@ -362,15 +384,15 @@ setInterval(async () => {
       pump_inlet_temperature: useRealPump ? hardwareState.inlet_temperature : simState.pump.inlet_temperature,
       pump_outlet_temperature: useRealPump ? hardwareState.outlet_temperature : simState.pump.outlet_temperature,
       // Heat Exchanger
-      hx_inlet_temp: useRealExchanger ? hardwareState.inlet_temperature : simState.heatExchanger.inlet_temperature,
-      hx_outlet_temp: useRealExchanger ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature,
+      hx_inlet_temp: hxInletTemp,
+      hx_outlet_temp: hxOutletTemp,
       hx_efficiency: simState.heatExchanger.efficiency,
-      hx_delta_t: simState.heatExchanger.temperature_difference,
+      hx_delta_t: hxDeltaT,
       hx_flow: simState.heatExchanger.flow,
-      heat_exchanger_inlet_temperature: useRealExchanger ? hardwareState.inlet_temperature : simState.heatExchanger.inlet_temperature,
-      heat_exchanger_outlet_temperature: useRealExchanger ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature,
+      heat_exchanger_inlet_temperature: hxInletTemp,
+      heat_exchanger_outlet_temperature: hxOutletTemp,
       heat_exchanger_efficiency: simState.heatExchanger.efficiency,
-      heat_exchanger_indicator: useRealExchanger ? 92.0 : simState.heatExchanger.heat_transfer_indicator,
+      heat_exchanger_indicator: simState.heatExchanger.heat_transfer_indicator,
       // Reactor
       reactor_temp: simState.reactor.temperature,
       reactor_temperature: simState.reactor.temperature,

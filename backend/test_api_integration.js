@@ -52,7 +52,7 @@ async function runIntegrationTests() {
   console.log('   Variables:', diag.important_variables);
   console.log('   Action:', diag.recommended_action);
 
-  if (diag.equipment !== 'Reactor' || !diag.anomaly) {
+  if ((diag.equipment !== 'Reactor' && diag.equipment !== 'R-101') || !diag.anomaly) {
     throw new Error('AI Diagnosis did not detect reactor fault');
   }
 

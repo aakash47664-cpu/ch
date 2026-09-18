@@ -282,7 +282,12 @@ export const OverviewWorkspace: React.FC<OverviewWorkspaceProps> = ({
                   <span className="metric-val font-mono">{(hxData.inlet_temperature || 25.2).toFixed(1)}°C</span>
                 </div>
                 <div className="unit-metric-item">
-                  <span className="metric-lbl">Outlet T</span>
+                  <span className="metric-lbl flex items-center gap-1">
+                    Outlet T
+                    {(hxData.source === 'real' || hxData.has_real_sensor || hxData.sensor_status === 'LIVE') && (
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live ESP32 DS18B20"></span>
+                    )}
+                  </span>
                   <span className="metric-val font-mono">{(hxData.outlet_temperature || 38.1).toFixed(1)}°C</span>
                 </div>
                 <div className="unit-metric-item">

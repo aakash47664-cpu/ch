@@ -1,188 +1,158 @@
 /**
- * ChemDiag AI — ESP32 Sensor Ingestion Firmware
+ * ChemDiag AI — ESP32 Real Sensor Ingestion Firmware
  * 
- * Target Board: ESP32 30-pin DevKit v1
+ * Hardware Target: ESP32 DevKit (30-pin or 38-pin)
+ * Sensor: DS18B20 Digital Temperature Sensor (E-101 Heat Exchanger Outlet Temperature)
  * 
- * Hardware Pin Connections:
- * - DS18B20 Inlet Sensor:       GPIO 4  (Requires 4.7kΩ pull-up resistor to 3.3V)
- * - DS18B20 Outlet Sensor:      GPIO 5  (Requires 4.7kΩ pull-up resistor to 3.3V)
- * - MPU6050 Accelerometer:      SDA -> GPIO 21, SCL -> GPIO 22 (I2C Bus, 3.3V & GND)
- * - IR RPM Sensor Pulse:        GPIO 18 (Digital input with hardware interrupt)
+ * =========================================================================
+ * WIRING DIAGRAM (DS18B20 to ESP32):
+ * =========================================================================
+ *  DS18B20 VCC (Red wire)   -----> ESP32 3.3V (or 5V)
+ *  DS18B20 GND (Black wire) -----> ESP32 GND
+ *  DS18B20 DQ  (Yellow wire) ----> ESP32 GPIO 4
+ *  
+ *  CRITICAL: Place a 4.7kΩ pull-up resistor between GPIO 4 (DQ) and 3.3V (VCC).
  * 
- * SAFETY NOTICE:
- * The 6V mini water pump is powered externally (e.g. from a 6V DC supply or battery).
- * DO NOT power or switch inductive motor loads directly from ESP32 GPIO pins!
+ * =========================================================================
+ * REQUIRED ARDUINO LIBRARIES:
+ * =========================================================================
+ * Install via Arduino IDE Library Manager:
+ * 1. OneWire (by Jim Studt, Paul Stoffregen)
+ * 2. DallasTemperature (by Miles Burton)
+ * 3. ArduinoJson (by Benoit Blanchon, v6 or v7)
  * 
- * Required Arduino Libraries (Install via Arduino Library Manager):
- * - OneWire by Jim Studt, Paul Stoffregen
- * - DallasTemperature by Miles Burton
- * - Adafruit MPU6050 + Adafruit Unified Sensor
- * - ArduinoJson by Benoit Blanchon (v6 or v7)
+ * =========================================================================
+ * TELEMETRY PAYLOAD:
+ * =========================================================================
+ * POST http://<LAPTOP_IP>:8000/api/sensors
+ * Content-Type: application/json
+ * {
+ *   "source": "real",
+ *   "unit": "heat_exchanger",
+ *   "outlet_temperature": 36.8
+ * }
  */
 
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <Wire.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
 #include <ArduinoJson.h>
 
 // =========================================================================
-// NETWORK CONFIGURATION (Configure for your local Wi-Fi & Laptop IP)
+// 1. NETWORK & BACKEND CONFIGURATION
 // =========================================================================
+// Replace with your local Wi-Fi network credentials:
 const char* WIFI_SSID     = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
-// Replace with your laptop's local LAN IP (e.g., "http://192.168.1.105:8000/api/sensors")
+// Replace with your development machine's local LAN IP address:
+// Example: "http://192.168.1.105:8000/api/sensors"
 const char* BACKEND_URL   = "http://192.168.1.100:8000/api/sensors";
 
 // =========================================================================
-// PIN DEFINITIONS
+// 2. HARDWARE PIN DEFINITIONS
 // =========================================================================
-#define PIN_DS18B20_INLET   4
-#define PIN_DS18B20_OUTLET  5
-#define PIN_MPU6050_SDA    21
-#define PIN_MPU6050_SCL    22
-#define PIN_IR_RPM         18
+#define PIN_DS18B20_OUTLET 4   // DS18B20 1-Wire Data line connected to GPIO 4
 
 // =========================================================================
-// GLOBAL HARDWARE HANDLERS
+// 3. GLOBAL SENSOR & TIMING INSTANCES
 // =========================================================================
-OneWire oneWireInlet(PIN_DS18B20_INLET);
-OneWire oneWireOutlet(PIN_DS18B20_OUTLET);
-DallasTemperature sensorInlet(&oneWireInlet);
-DallasTemperature sensorOutlet(&oneWireOutlet);
+OneWire oneWire(PIN_DS18B20_OUTLET);
+DallasTemperature dallasSensor(&oneWire);
 
-Adafruit_MPU6050 mpu;
-bool mpuAvailable = false;
-
-// RPM Calculation Variables
-volatile unsigned long pulseCount = 0;
-unsigned long lastRpmCalcTime = 0;
-float currentRpm = 0.0;
-
-// Pulse interrupt service routine (ISR)
-void IRAM_ATTR onIrPulse() {
-  pulseCount++;
-}
-
-// Timing loop
 unsigned long lastTransmissionTime = 0;
-const unsigned long TRANSMISSION_INTERVAL_MS = 1000; // 1-second transmission rate
+const unsigned long TRANSMISSION_INTERVAL_MS = 1000; // Transmit telemetry every 1 second (1000ms)
+int consecutiveErrors = 0;
+
+// Forward Declarations
+void connectToWiFi();
+void sendSensorData(float outletTemp);
 
 // =========================================================================
-// SETUP
+// 4. SETUP
 // =========================================================================
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
   Serial.println("\n=======================================================");
-  Serial.println("   CHEMDIAG AI — ESP32 INDUSTRIAL SENSOR TELEMETRY     ");
+  Serial.println("  CHEMDIAG AI — ESP32 E-101 OUTLET TEMPERATURE SENSOR  ");
   Serial.println("=======================================================");
+  Serial.printf("[SETUP] Initializing DS18B20 on GPIO %d...\n", PIN_DS18B20_OUTLET);
 
-  // 1. Initialize IR RPM interrupt pin
-  pinMode(PIN_IR_RPM, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_IR_RPM), onIrPulse, FALLING);
-  Serial.printf("[INIT] IR RPM Sensor configured on GPIO %d (Interrupt FALLING)\n", PIN_IR_RPM);
+  // Initialize OneWire & DS18B20
+  dallasSensor.begin();
+  int deviceCount = dallasSensor.getDeviceCount();
+  Serial.printf("[SETUP] Found %d OneWire device(s) on GPIO %d\n", deviceCount, PIN_DS18B20_OUTLET);
 
-  // 2. Initialize DS18B20 Temperature Sensors
-  sensorInlet.begin();
-  sensorOutlet.begin();
-  sensorInlet.setResolution(10);  // 10-bit resolution (~0.25°C step, 187ms conversion)
-  sensorOutlet.setResolution(10);
-  Serial.printf("[INIT] DS18B20 Inlet on GPIO %d, Outlet on GPIO %d\n", PIN_DS18B20_INLET, PIN_DS18B20_OUTLET);
+  // Set 10-bit resolution (~0.25°C precision, 187.5ms conversion time)
+  dallasSensor.setResolution(10);
+  dallasSensor.setWaitForConversion(true);
 
-  // 3. Initialize MPU6050 Vibration Sensor
-  Wire.begin(PIN_MPU6050_SDA, PIN_MPU6050_SCL);
-  if (mpu.begin()) {
-    mpuAvailable = true;
-    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-    Serial.printf("[INIT] MPU6050 ready on I2C (SDA=%d, SCL=%d)\n", PIN_MPU6050_SDA, PIN_MPU6050_SCL);
-  } else {
-    Serial.println("[WARN] MPU6050 not detected. Defaulting to baseline vibration readings.");
-  }
-
-  // 4. Connect to Wi-Fi
+  // Connect to Local Wi-Fi
   connectToWiFi();
+
+  Serial.println("[SETUP] Initialization complete. Starting telemetry loop...\n");
 }
 
 // =========================================================================
-// MAIN LOOP
+// 5. MAIN LOOP
 // =========================================================================
 void loop() {
-  // Check Wi-Fi connection
+  // Ensure Wi-Fi remains connected
   if (WiFi.status() != WL_CONNECTED) {
     connectToWiFi();
   }
 
   unsigned long currentMillis = millis();
 
-  // Transmit telemetry every 1 second
   if (currentMillis - lastTransmissionTime >= TRANSMISSION_INTERVAL_MS) {
     lastTransmissionTime = currentMillis;
 
-    // 1. Calculate RPM
-    unsigned long pulses;
-    noInterrupts();
-    pulses = pulseCount;
-    pulseCount = 0;
-    interrupts();
+    // Request temperature conversion from DS18B20
+    dallasSensor.requestTemperatures();
+    float outletTemp = dallasSensor.getTempCByIndex(0);
 
-    // Pulses per second * 60 = RPM (assumes 1 pulse / reflector pass per revolution)
-    currentRpm = (pulses * 60.0);
+    // Error Handling:
+    // - DEVICE_DISCONNECTED_C is -127.0°C (sensor not found / disconnected)
+    // - 85.0°C is power-on reset uninitialized register value
+    // - Valid physical operating range: -20°C to 120°C
+    bool isInvalid = (outletTemp == DEVICE_DISCONNECTED_C || 
+                      outletTemp <= -50.0 || 
+                      outletTemp >= 125.0 || 
+                      (outletTemp == 85.0 && consecutiveErrors == 0));
 
-    // 2. Read DS18B20 Temperatures
-    sensorInlet.requestTemperatures();
-    sensorOutlet.requestTemperatures();
-    float tempIn = sensorInlet.getTempCByIndex(0);
-    float tempOut = sensorOutlet.getTempCByIndex(0);
-
-    // Handle sensor disconnection fallback (-127°C is Dallas disconnected code)
-    if (tempIn <= -50.0 || tempIn >= 85.0 && tempIn == 85.0) tempIn = 25.4;
-    if (tempOut <= -50.0 || tempOut >= 85.0 && tempOut == 85.0) tempOut = 36.8;
-
-    // 3. Read MPU6050 Acceleration & Compute Vibration Index
-    float vibrationG = 0.08; // nominal baseline
-    if (mpuAvailable) {
-      sensors_event_t a, g, temp;
-      mpu.getEvent(&a, &g, &temp);
-
-      // Convert m/s^2 to G (1 G = 9.80665 m/s^2)
-      // Dynamic vibration magnitude = sqrt((ax)^2 + (ay)^2 + (az - 9.8)^2) / 9.8
-      float dynamicZ = a.acceleration.z - 9.80665;
-      float mag = sqrt(a.acceleration.x * a.acceleration.x +
-                       a.acceleration.y * a.acceleration.y +
-                       dynamicZ * dynamicZ);
-      vibrationG = mag / 9.80665;
-      if (vibrationG < 0.02) vibrationG = 0.05;
+    if (isInvalid) {
+      consecutiveErrors++;
+      Serial.printf("[WARN] DS18B20 Sensor Error! Raw reading: %.2f °C (Count: %d)\n", outletTemp, consecutiveErrors);
+      Serial.println("       Check GPIO 4 wiring and 4.7kΩ pull-up resistor to 3.3V.");
+      return;
     }
 
-    // Print diagnostics to Serial Monitor
-    Serial.println("--------------------------------------------------");
-    Serial.printf("[SENSORS] Inlet: %.1f °C | Outlet: %.1f °C | ΔT: %.1f °C\n", tempIn, tempOut, (tempOut - tempIn));
-    Serial.printf("[SENSORS] Vibration: %.3f G | RPM: %.0f\n", vibrationG, currentRpm);
+    // Reset error counter on successful reading
+    consecutiveErrors = 0;
 
-    // 4. Send JSON to ChemDiag Backend
-    sendTelemetry(tempIn, tempOut, vibrationG, currentRpm);
+    // Display formatted reading on Serial Monitor
+    Serial.printf("[DS18B20] E-101 Outlet Temperature: %.1f °C\n", outletTemp);
+
+    // Transmit JSON payload to backend server
+    sendSensorData(outletTemp);
   }
 }
 
 // =========================================================================
-// WI-FI CONNECTION HANDLER
+// 6. WI-FI CONNECTION HANDLER
 // =========================================================================
 void connectToWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
-  Serial.printf("[WIFI] Connecting to SSID: %s ", WIFI_SSID);
+  Serial.printf("[WIFI] Connecting to '%s' ", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 15) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
     attempts++;
@@ -190,44 +160,47 @@ void connectToWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n[WIFI] Connected successfully!");
-    Serial.printf("[WIFI] IP Address: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIFI] ESP32 IP Address: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIFI] Target Backend: %s\n\n", BACKEND_URL);
   } else {
-    Serial.println("\n[WIFI] Connection pending / failed. Will retry next cycle.");
+    Serial.println("\n[WIFI] Connection attempt failed. Will retry on next cycle.");
   }
 }
 
 // =========================================================================
-// HTTP POST TRANSMISSION HANDLER
+// 7. HTTP SENSOR TELEMETRY TRANSMITTER
 // =========================================================================
-void sendTelemetry(float tempIn, float tempOut, float vibration, float rpm) {
+void sendSensorData(float outletTemp) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[HTTP] Cannot transmit: Wi-Fi disconnected");
+    Serial.println("[HTTP] Transmission skipped: Wi-Fi is disconnected.");
     return;
   }
 
   HTTPClient http;
   http.begin(BACKEND_URL);
   http.addHeader("Content-Type", "application/json");
+  http.setTimeout(3000); // 3-second HTTP timeout
 
-  // Construct JSON payload
+  // Build JSON payload matching ChemDiag backend schema
   StaticJsonDocument<256> doc;
   doc["source"] = "real";
-  doc["unit"] = "pump";
-  doc["timestamp"] = String(millis());
-  doc["inlet_temperature"] = serialized(String(tempIn, 1));
-  doc["outlet_temperature"] = serialized(String(tempOut, 1));
-  doc["vibration"] = serialized(String(vibration, 3));
-  doc["rpm"] = serialized(String(rpm, 0));
+  doc["unit"] = "heat_exchanger";
+  doc["outlet_temperature"] = serialized(String(outletTemp, 1));
 
   String requestBody;
   serializeJson(doc, requestBody);
 
-  int httpResponseCode = http.POST(requestBody);
+  int httpCode = http.POST(requestBody);
 
-  if (httpResponseCode > 0) {
-    Serial.printf("[HTTP] POST %s -> Code %d\n", BACKEND_URL, httpResponseCode);
+  if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK || httpCode == 200) {
+      Serial.printf("[HTTP] POST Success -> %d OK (E-101 Tout: %.1f °C)\n", httpCode, outletTemp);
+    } else {
+      Serial.printf("[HTTP] POST Response -> Code %d\n", httpCode);
+    }
   } else {
-    Serial.printf("[HTTP] POST failed, error: %s (Check if backend server is running)\n", http.errorToString(httpResponseCode).c_str());
+    Serial.printf("[HTTP] POST Failed! Error: %s\n", http.errorToString(httpCode).c_str());
+    Serial.println("       Ensure backend server is running and laptop IP is reachable.");
   }
 
   http.end();

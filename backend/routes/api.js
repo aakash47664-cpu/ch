@@ -254,18 +254,66 @@ export function createApiRouter({
         return res.status(400).json({ error: 'Malformed JSON payload' });
       }
 
-      const inlet_temp = Number(payload.inlet_temperature);
-      const outlet_temp = Number(payload.outlet_temperature);
-      const vibration = Number(payload.vibration);
-      const rpm = Number(payload.rpm);
+      const unit = (payload.unit || '').toString().toLowerCase();
+      const source = payload.source || 'real';
+      const now = Date.now();
+
+      // Case 1: E-101 / Heat Exchanger dedicated payload
+      // Target Schema: { "source": "real", "unit": "heat_exchanger", "outlet_temperature": <DS18B20 VALUE> }
+      if (
+        unit === 'heat_exchanger' ||
+        unit === 'e101' ||
+        unit === 'e-101' ||
+        (payload.outlet_temperature !== undefined &&
+          payload.vibration === undefined &&
+          payload.rpm === undefined &&
+          payload.inlet_temperature === undefined)
+      ) {
+        const outlet_temp = Number(payload.outlet_temperature);
+
+        if (isNaN(outlet_temp) || outlet_temp < -20 || outlet_temp > 125) {
+          return res.status(422).json({
+            error: 'Validation failed: E-101 outlet_temperature out of physical range or NaN',
+            received: payload
+          });
+        }
+
+        // Update hardware state for Heat Exchanger
+        hardwareState.hxLastSeen = now;
+        hardwareState.hxConnected = true;
+        hardwareState.hx_outlet_temperature = outlet_temp;
+        hardwareState.lastSeen = now;
+        hardwareState.isConnected = true;
+        hardwareState.source = source;
+
+        // Print required backend console log
+        console.log(`REAL SENSOR: E-101 outlet temperature = ${outlet_temp.toFixed(1)} °C`);
+
+        // Persist to database
+        await recordTelemetry('heat_exchanger', source, {
+          outlet_temperature: outlet_temp
+        });
+
+        return res.status(200).json({
+          status: 'ok',
+          unit: 'heat_exchanger',
+          outlet_temperature: outlet_temp,
+          received_at: new Date().toISOString()
+        });
+      }
+
+      // Case 2: Multi-sensor payload / Pump payload
+      const inlet_temp = payload.inlet_temperature !== undefined ? Number(payload.inlet_temperature) : undefined;
+      const outlet_temp = payload.outlet_temperature !== undefined ? Number(payload.outlet_temperature) : undefined;
+      const vibration = payload.vibration !== undefined ? Number(payload.vibration) : undefined;
+      const rpm = payload.rpm !== undefined ? Number(payload.rpm) : undefined;
 
       // Validation
       if (
-        isNaN(inlet_temp) || isNaN(outlet_temp) || isNaN(vibration) || isNaN(rpm) ||
-        inlet_temp < -20 || inlet_temp > 120 ||
-        outlet_temp < -20 || outlet_temp > 120 ||
-        vibration < 0 || vibration > 15 ||
-        rpm < 0 || rpm > 15000
+        (inlet_temp !== undefined && (isNaN(inlet_temp) || inlet_temp < -20 || inlet_temp > 125)) ||
+        (outlet_temp !== undefined && (isNaN(outlet_temp) || outlet_temp < -20 || outlet_temp > 125)) ||
+        (vibration !== undefined && (isNaN(vibration) || vibration < 0 || vibration > 15)) ||
+        (rpm !== undefined && (isNaN(rpm) || rpm < 0 || rpm > 15000))
       ) {
         return res.status(422).json({
           error: 'Validation failed: sensor readings out of physical range or NaN',
@@ -274,20 +322,26 @@ export function createApiRouter({
       }
 
       // Update hardware state
-      hardwareState.lastSeen = Date.now();
+      hardwareState.lastSeen = now;
       hardwareState.isConnected = true;
-      hardwareState.inlet_temperature = inlet_temp;
-      hardwareState.outlet_temperature = outlet_temp;
-      hardwareState.vibration = vibration;
-      hardwareState.rpm = rpm;
-      hardwareState.source = 'real';
+      if (inlet_temp !== undefined) hardwareState.inlet_temperature = inlet_temp;
+      if (outlet_temp !== undefined) {
+        hardwareState.outlet_temperature = outlet_temp;
+        hardwareState.hx_outlet_temperature = outlet_temp;
+        hardwareState.hxLastSeen = now;
+        hardwareState.hxConnected = true;
+        console.log(`REAL SENSOR: E-101 outlet temperature = ${outlet_temp.toFixed(1)} °C`);
+      }
+      if (vibration !== undefined) hardwareState.vibration = vibration;
+      if (rpm !== undefined) hardwareState.rpm = rpm;
+      hardwareState.source = source;
 
       // Persist to database
-      await recordTelemetry('pump', 'real', {
-        inlet_temperature: inlet_temp,
-        outlet_temperature: outlet_temp,
-        vibration,
-        rpm
+      await recordTelemetry(unit || 'pump', source, {
+        inlet_temperature: hardwareState.inlet_temperature,
+        outlet_temperature: hardwareState.outlet_temperature,
+        vibration: hardwareState.vibration,
+        rpm: hardwareState.rpm
       });
 
       return res.status(200).json({ status: 'ok', received_at: new Date().toISOString() });
@@ -300,13 +354,23 @@ export function createApiRouter({
   // 2. Overview of all 4 Equipment
   router.get('/equipment', (req, res) => {
     const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
+    const isHxHardwareOnline = hardwareState.hxLastSeen > 0 && (Date.now() - hardwareState.hxLastSeen < hardwareState.timeoutMs);
+    const hasRealHxTemp = isHxHardwareOnline && hardwareState.hx_outlet_temperature !== null;
     const activeFault = simulator.getFault();
     const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
-    const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
+    const useRealExchanger = (hasRealHxTemp || isHardwareOnline) && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
     const simState = simulator.getState();
     const diagnostics = typeof getEquipmentDiagnostics === 'function' 
       ? getEquipmentDiagnostics() 
       : (continuousMlMonitor ? continuousMlMonitor.getEquipmentDiagnostics() : {});
+
+    const hxOutletTemp = hasRealHxTemp
+      ? hardwareState.hx_outlet_temperature
+      : (useRealExchanger && hardwareState.outlet_temperature ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature);
+    const hxInletTemp = simState.heatExchanger.inlet_temperature;
+    const hxDeltaT = Number(Math.abs(hxOutletTemp - hxInletTemp).toFixed(1));
+    const hxSource = hasRealHxTemp ? 'real' : (useRealExchanger && hardwareState.source === 'real' ? 'real' : 'demo');
+    const hxSensorStatus = hasRealHxTemp ? 'LIVE' : (hardwareState.hxLastSeen === 0 ? 'WAITING' : 'OFFLINE');
 
     const equipmentList = [
       {
@@ -327,17 +391,20 @@ export function createApiRouter({
       {
         id: 'heat_exchanger',
         name: 'Heat Exchanger (Shell & Tube)',
-        source: useRealExchanger ? 'real' : 'demo',
+        source: hxSource,
         status: simState.heatExchanger.status,
         health: diagnostics.E101?.health ?? simState.heatExchanger.health,
         diagnostics: diagnostics.E101 || diagnostics.heat_exchanger,
-        data: useRealExchanger ? {
-          inlet_temperature: hardwareState.inlet_temperature,
-          outlet_temperature: hardwareState.outlet_temperature,
-          temperature_difference: Number(Math.abs(hardwareState.outlet_temperature - hardwareState.inlet_temperature).toFixed(1)),
-          heat_transfer_indicator: 92.0,
-          efficiency: 92.0
-        } : simState.heatExchanger
+        data: {
+          ...simState.heatExchanger,
+          outlet_temperature: Number(hxOutletTemp.toFixed(1)),
+          inlet_temperature: hxInletTemp,
+          temperature_difference: hxDeltaT,
+          source: hxSource,
+          sensor_status: hxSensorStatus,
+          has_real_sensor: hasRealHxTemp,
+          sensor_last_seen: hardwareState.hxLastSeen || null
+        }
       },
       {
         id: 'reactor',
@@ -1118,12 +1185,22 @@ export function createApiRouter({
       } = req.body || {};
 
       const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
+      const isHxHardwareOnline = hardwareState.hxLastSeen > 0 && (Date.now() - hardwareState.hxLastSeen < hardwareState.timeoutMs);
+      const hasRealHxTemp = isHxHardwareOnline && hardwareState.hx_outlet_temperature !== null;
       const activeFault = simulator.getFault();
       const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
-      const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
+      const useRealExchanger = (hasRealHxTemp || isHardwareOnline) && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
       const simState = simulator.getState();
       const latestDiag = getLatestDiagnosis();
       const recentAlerts = await getRecentAlerts(5);
+
+      const hxOutletTemp = hasRealHxTemp
+        ? hardwareState.hx_outlet_temperature
+        : (useRealExchanger && hardwareState.outlet_temperature ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature);
+      const hxInletTemp = simState.heatExchanger.inlet_temperature;
+      const hxDeltaT = Number(Math.abs(hxOutletTemp - hxInletTemp).toFixed(1));
+      const hxSource = hasRealHxTemp ? 'real' : (useRealExchanger && hardwareState.source === 'real' ? 'real' : 'demo');
+      const hxSensorStatus = hasRealHxTemp ? 'LIVE' : (hardwareState.hxLastSeen === 0 ? 'WAITING' : 'OFFLINE');
 
       const liveState = currentState || {
         activeFault,
@@ -1147,15 +1224,18 @@ export function createApiRouter({
           heat_exchanger: {
             id: 'heat_exchanger',
             name: 'Heat Exchanger (Shell & Tube)',
-            source: useRealExchanger ? 'real' : 'demo',
-            source_label: useRealExchanger ? 'REAL DATA' : 'DEMO / SIMULATED',
-            data: useRealExchanger ? {
-              inlet_temperature: hardwareState.inlet_temperature,
-              outlet_temperature: hardwareState.outlet_temperature,
-              temperature_difference: Number(Math.abs(hardwareState.outlet_temperature - hardwareState.inlet_temperature).toFixed(1)),
-              heat_transfer_indicator: 92.0,
-              efficiency: 92.0
-            } : simState.heatExchanger
+            source: hxSource,
+            source_label: hxSource === 'real' ? 'REAL DATA' : 'DEMO / SIMULATED',
+            data: {
+              ...simState.heatExchanger,
+              outlet_temperature: Number(hxOutletTemp.toFixed(1)),
+              inlet_temperature: hxInletTemp,
+              temperature_difference: hxDeltaT,
+              source: hxSource,
+              sensor_status: hxSensorStatus,
+              has_real_sensor: hasRealHxTemp,
+              sensor_last_seen: hardwareState.hxLastSeen || null
+            }
           },
           reactor: {
             id: 'reactor',
@@ -1344,12 +1424,22 @@ export function createApiRouter({
       console.log("Requested AI provider:", provider);
 
       const isHardwareOnline = Date.now() - hardwareState.lastSeen < hardwareState.timeoutMs;
+      const isHxHardwareOnline = hardwareState.hxLastSeen > 0 && (Date.now() - hardwareState.hxLastSeen < hardwareState.timeoutMs);
+      const hasRealHxTemp = isHxHardwareOnline && hardwareState.hx_outlet_temperature !== null;
       const activeFault = simulator.getFault();
       const useRealPump = isHardwareOnline && activeFault !== 'pump_fault' && activeFault !== 'early_pump_degradation';
-      const useRealExchanger = isHardwareOnline && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
+      const useRealExchanger = (hasRealHxTemp || isHardwareOnline) && activeFault !== 'heat_exchanger_fault' && activeFault !== 'early_heat_exchanger_fouling';
       const simState = simulator.getState();
       const latestDiag = getLatestDiagnosis();
       const recentAlerts = await getRecentAlerts(5);
+
+      const hxOutletTemp = hasRealHxTemp
+        ? hardwareState.hx_outlet_temperature
+        : (useRealExchanger && hardwareState.outlet_temperature ? hardwareState.outlet_temperature : simState.heatExchanger.outlet_temperature);
+      const hxInletTemp = simState.heatExchanger.inlet_temperature;
+      const hxDeltaT = Number(Math.abs(hxOutletTemp - hxInletTemp).toFixed(1));
+      const hxSource = hasRealHxTemp ? 'real' : (useRealExchanger && hardwareState.source === 'real' ? 'real' : 'demo');
+      const hxSensorStatus = hasRealHxTemp ? 'LIVE' : (hardwareState.hxLastSeen === 0 ? 'WAITING' : 'OFFLINE');
 
       const liveState = {
         activeFault,
@@ -1373,15 +1463,18 @@ export function createApiRouter({
           heat_exchanger: {
             id: 'heat_exchanger',
             name: 'Heat Exchanger (Shell & Tube)',
-            source: useRealExchanger ? 'real' : 'demo',
-            source_label: useRealExchanger ? 'REAL DATA' : 'DEMO / SIMULATED',
-            data: useRealExchanger ? {
-              inlet_temperature: hardwareState.inlet_temperature,
-              outlet_temperature: hardwareState.outlet_temperature,
-              temperature_difference: Number(Math.abs(hardwareState.outlet_temperature - hardwareState.inlet_temperature).toFixed(1)),
-              heat_transfer_indicator: 92.0,
-              efficiency: 92.0
-            } : simState.heatExchanger
+            source: hxSource,
+            source_label: hxSource === 'real' ? 'REAL DATA' : 'DEMO / SIMULATED',
+            data: {
+              ...simState.heatExchanger,
+              outlet_temperature: Number(hxOutletTemp.toFixed(1)),
+              inlet_temperature: hxInletTemp,
+              temperature_difference: hxDeltaT,
+              source: hxSource,
+              sensor_status: hxSensorStatus,
+              has_real_sensor: hasRealHxTemp,
+              sensor_last_seen: hardwareState.hxLastSeen || null
+            }
           },
           reactor: {
             id: 'reactor',
