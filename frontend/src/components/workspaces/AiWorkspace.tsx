@@ -62,9 +62,6 @@ export const AiWorkspace: React.FC<AiWorkspaceProps> = ({
                 <h2 className="workspace-title">CONTINUOUS ML &amp; INDUSTRIAL DECISION ENGINE</h2>
                 <span className="status-badge nominal">● ML &amp; AI ENGINE ACTIVE</span>
               </div>
-              <p className="workspace-subtitle">
-                Dual-Pipeline: Unsupervised Isolation Forest Anomaly Detection + Multi-Class Random Forest Classification &bull; Automatic Root-Cause Synthesis &bull; Grounded Industrial AI Copilot
-              </p>
             </div>
           </div>
 

@@ -525,6 +525,8 @@ export interface ProcessUpdatePayload {
   causal_propagation?: CausalPropagationData;
   timeline_events?: TimelineEventItem[];
   all_metrics?: Record<string, VariableMetric>;
+  // Independent Temporal Intermittent & Transient Fault State
+  intermittent_faults?: IntermittentDetectorState;
 }
 
 export interface ParameterDeviationRow {
@@ -607,6 +609,8 @@ export interface ChatMessage {
   timestamp: string;
   equipment?: string;
   provider?: 'ai_assistant' | 'local_rule_engine' | 'groq_industrial_ai' | 'industrial_ai' | string;
+  fallback?: boolean;
+  fallbackNotice?: string;
   evidence?: Array<{ label: string; val: string; state: string }>;
 }
 
@@ -617,6 +621,8 @@ export interface ChatResponse {
   answer?: string;
   model?: string;
   equipment?: string;
+  fallback?: boolean;
+  fallbackNotice?: string;
   evidence?: Array<{ label: string; val: string; state: string }>;
   provider?: 'gemini' | 'groq' | 'Gemini' | 'Groq' | 'ai_assistant' | 'local_rule_engine' | 'groq_industrial_ai' | 'industrial_ai' | string;
   timestamp?: string;
@@ -849,6 +855,98 @@ export interface TelemetryData {
   reactor?: ReactorData;
   distillation?: DistillationData;
   streams?: ProcessStream[];
+}
+
+// ==========================================
+// INTERMITTENT & TRANSIENT FAULTS MODULE TYPES
+// ==========================================
+
+export type IntermittentPatternType =
+  | 'NON-REPEATABLE'
+  | 'ISOLATED TRANSIENT'
+  | 'ISOLATED'
+  | 'SPORADIC'
+  | 'INTERMITTENT'
+  | 'RECURRENT'
+  | 'PERSISTENT'
+  | 'UNCLASSIFIED TRANSIENT EVENT'
+  | 'NORMAL';
+
+export type IntermittentStatusType = 'EVENT ACTIVE' | 'RECOVERED' | 'TRANSIENT EVENT';
+
+export interface IntermittentVariableDeviation {
+  nominal: number;
+  current: number;
+  delta: number;
+  percent: number;
+  unit: string;
+  normalizedDev: number;
+  isAbnormal: boolean;
+}
+
+export interface IntermittentVariableBaseline {
+  nominal: number;
+  unit: string;
+  name: string;
+}
+
+export interface IntermittentEvent {
+  id?: number;
+  event_id: string;
+  equipment_id: string;
+  equipment_name?: string;
+  start_time: string;
+  end_time: string | null;
+  duration: number;
+  severity: SeverityLevel;
+  pattern: IntermittentPatternType;
+  event_type?: IntermittentPatternType;
+  variables: string[];
+  primary_variables?: string[];
+  secondary_variables?: string[];
+  correlated_variables?: string[];
+  values: Record<string, number>;
+  baseline: Record<string, IntermittentVariableBaseline>;
+  deviation: Record<string, IntermittentVariableDeviation>;
+  status: IntermittentStatusType;
+  observation: string;
+  interpretation: string;
+  time_since_previous?: number | null;
+  recurrence_count?: number;
+  average_interval?: number | null;
+  average_duration?: number;
+  snapshot_history?: Array<Record<string, any>>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface IntermittentRecurrenceStats {
+  total_events: number;
+  active_events: number;
+  non_repeatable_events: number;
+  isolated_events: number;
+  sporadic_events: number;
+  intermittent_events: number;
+  recurrent_events: number;
+  persistent_events: number;
+  avg_duration: number;
+  min_duration: number;
+  max_duration: number;
+  avg_interval?: number | null;
+  last_event_time: string | null;
+  first_event_time: string | null;
+  overall_pattern: string;
+  by_equipment: Record<string, { count: number; avg_duration: number; avg_interval?: number | null; last_seen: string | null; pattern?: string }>;
+}
+
+export interface IntermittentDetectorState {
+  timestamp: string;
+  active_events_count: number;
+  active_events: IntermittentEvent[];
+  recent_events: IntermittentEvent[];
+  recurrence_stats: IntermittentRecurrenceStats;
+  sliding_window: Array<Record<string, any>>;
+  equipment_states: Record<string, { state: string; has_active_event: boolean }>;
 }
 
 

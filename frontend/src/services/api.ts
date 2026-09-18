@@ -1,6 +1,24 @@
-import { AlertItem, Diagnosis, FaultMode, ChatMessage, ChatResponse, ManualControlOverrides } from '../types';
+import { AlertItem, Diagnosis, FaultMode, ChatMessage, ChatResponse, ManualControlOverrides, IntermittentEvent, IntermittentRecurrenceStats, IntermittentDetectorState } from '../types';
 
-const API_BASE = '/api';
+// Centralized API Configuration for ChemDiag Industrial AI
+const getApiBaseUrl = (): string => {
+  // 1. Explicit VITE_API_URL from environment (e.g., Render URL in production)
+  const envApiUrl = import.meta.env.VITE_API_URL;
+  if (envApiUrl && typeof envApiUrl === 'string' && envApiUrl.trim()) {
+    const cleanUrl = envApiUrl.trim().replace(/\/+$/, '');
+    return cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
+  }
+  // 2. In browser dev mode on localhost, target port 8000
+  if (typeof window !== 'undefined') {
+    if ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.location.port !== '8000') {
+      return 'http://localhost:8000/api';
+    }
+  }
+  // 3. Fallback to relative /api for production reverse proxy or express static hosting
+  return '/api';
+};
+
+export const API_BASE = getApiBaseUrl();
 
 export function normalizeAlerts(response: unknown): AlertItem[] {
   if (!response) return [];
@@ -110,12 +128,17 @@ export async function sendAiChatMessage(
 ): Promise<ChatResponse> {
   const cleanHistory = (history || [])
     .filter(h => h && (h.text || (h as any).content))
-    .map(h => ({
-      sender: h.sender,
-      role: (h.sender === 'user' || (h as any).role === 'user') ? 'user' : 'assistant',
-      text: h.text || (h as any).content,
-      content: h.text || (h as any).content
-    }));
+    .slice(-8)
+    .map(h => {
+      const rawText = String(h.text || (h as any).content || '');
+      const trimmedText = rawText.length > 800 ? rawText.substring(0, 800) + '...' : rawText;
+      return {
+        sender: h.sender,
+        role: (h.sender === 'user' || (h as any).role === 'user') ? 'user' : 'assistant',
+        text: trimmedText,
+        content: trimmedText
+      };
+    });
 
   const res = await fetch(`${API_BASE}/ai/chat`, {
     method: 'POST',
@@ -132,7 +155,7 @@ export async function sendAiChatMessage(
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || `AI Chat request failed with status ${res.status}`);
+    throw new Error(errData.error || errData.message || `AI Chat request failed with status ${res.status}`);
   }
   return res.json();
 }
@@ -375,6 +398,64 @@ export async function setSimulatorScenario(fault: string) {
   if (!res.ok) throw new Error('Failed to set simulation scenario');
   return res.json();
 }
+
+// ==========================================
+// INTERMITTENT & TRANSIENT FAULTS API
+// ==========================================
+
+export async function fetchIntermittentState(): Promise<IntermittentDetectorState> {
+  const res = await fetch(`${API_BASE}/intermittent-faults/state`);
+  if (!res.ok) throw new Error('Failed to fetch intermittent fault state');
+  return res.json();
+}
+
+export async function fetchIntermittentEvents(params: { equipment?: string; pattern?: string; status?: string; limit?: number } = {}): Promise<{ count: number; events: IntermittentEvent[] }> {
+  const query = new URLSearchParams();
+  if (params.equipment && params.equipment !== 'ALL') query.append('equipment', params.equipment);
+  if (params.pattern && params.pattern !== 'ALL') query.append('pattern', params.pattern);
+  if (params.status && params.status !== 'ALL') query.append('status', params.status);
+  if (params.limit) query.append('limit', String(params.limit));
+
+  const url = `${API_BASE}/intermittent-faults/events${query.toString() ? `?${query.toString()}` : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to fetch intermittent events');
+  return res.json();
+}
+
+export async function fetchIntermittentEventDetail(eventId: string): Promise<{ event: IntermittentEvent }> {
+  const res = await fetch(`${API_BASE}/intermittent-faults/events/${encodeURIComponent(eventId)}`);
+  if (!res.ok) throw new Error(`Failed to fetch event detail for ${eventId}`);
+  return res.json();
+}
+
+export async function fetchIntermittentStats(): Promise<{ stats: IntermittentRecurrenceStats; live: any }> {
+  const res = await fetch(`${API_BASE}/intermittent-faults/stats`);
+  if (!res.ok) throw new Error('Failed to fetch intermittent fault statistics');
+  return res.json();
+}
+
+export async function triggerIntermittentTestPulse(equipment: string = 'pump', modeOrDuration: string | number = 'single_spike') {
+  const payload = typeof modeOrDuration === 'number'
+    ? { equipment, duration: modeOrDuration, mode: 'single_spike' }
+    : { equipment, mode: modeOrDuration };
+  const res = await fetch(`${API_BASE}/intermittent-faults/trigger-pulse`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error('Failed to trigger intermittent test pulse');
+  return res.json();
+}
+
+export async function clearIntermittentHistory() {
+  const res = await fetch(`${API_BASE}/intermittent-faults/clear`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  });
+  if (!res.ok) throw new Error('Failed to clear intermittent history');
+  return res.json();
+}
+
 
 
 

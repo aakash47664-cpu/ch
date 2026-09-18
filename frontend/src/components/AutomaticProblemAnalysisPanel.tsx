@@ -1,35 +1,25 @@
 import React, { useState } from 'react';
 import {
   AutomaticAnalysisItem,
-  FailureEventHistoryItem,
-  ProcessUpdatePayload
+  FailureEventHistoryItem
 } from '../types';
 import {
   Sparkles,
   CheckCircle2,
   AlertTriangle,
   AlertOctagon,
-  Clock,
-  Radio,
-  ArrowRight,
-  ShieldCheck,
-  ShieldAlert,
-  Search,
-  MessageSquare,
-  Activity,
-  Flame,
-  Atom,
-  Layers,
-  HelpCircle,
   History,
   RotateCcw,
   ChevronRight,
   GitBranch,
   Wrench,
-  TrendingDown,
-  TrendingUp,
+  Activity,
+  Flame,
   Cpu,
-  Check
+  Layers,
+  ShieldCheck,
+  Search,
+  MessageSquare
 } from 'lucide-react';
 
 interface AutomaticProblemAnalysisPanelProps {
@@ -74,17 +64,15 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
 
   const displayItem = historyItem || tabItem || currentAnalysis;
 
-  if (!displayItem && !isAnalyzing) {
-    return null;
-  }
-
-  const isFailure = displayItem?.isFailureConfirmed || displayItem?.stage === 'FAULT_CONFIRMED';
-  const isUnknown = displayItem?.isUnknownFault;
-  const isNominal = displayItem?.stage === 'NORMAL' && !isFailure && !isUnknown;
-  const healthScore = displayItem?.healthScore ?? 100;
-  const riskScore = displayItem?.riskScore ?? Math.round(100 - healthScore);
-  const equipId = displayItem?.equipmentId || 'pump';
-  const confidence = displayItem?.confidence ?? 89;
+  // Check whether we are in a nominal state (no active problem)
+  const isNominal =
+    !historyItem &&
+    (!displayItem ||
+      displayItem.stage === 'NORMAL' ||
+      (displayItem.healthScore >= 90 &&
+        !displayItem.isFailureConfirmed &&
+        !displayItem.isUnknownFault &&
+        displayItem.role !== 'PRIMARY_FAULT'));
 
   const getEquipmentIcon = (id?: string) => {
     switch (id?.toLowerCase()) {
@@ -105,6 +93,216 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
     }
   };
 
+  // ===========================================================================
+  // 1. NOMINAL STATE: NO ACTIVE PROBLEM
+  // ===========================================================================
+  if (isNominal) {
+    return (
+      <div className="auto-problem-analysis-container mode-nominal" aria-label="Automatic AI Problem Analysis Section">
+        {/* Section Header */}
+        <div className="auto-section-header">
+          <div className="header-left-col">
+            <div className="header-title-row">
+              <div className="header-icon-box">
+                <CheckCircle2 size={18} className="text-emerald-600" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="auto-main-heading">AUTOMATIC AI PROBLEM ANALYSIS</h2>
+                  <span className="auto-active-status-badge">
+                    <span className="pulsing-emerald-dot" />
+                    CONTINUOUS ML ACTIVE
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="header-right-col">
+            <div className="engine-status-group">
+              <div className="status-chip ml-chip">
+                <span className="chip-dot emerald" />
+                <span className="chip-lbl">ML ENGINE</span>
+                <span className="chip-val">ALL NOMINAL</span>
+              </div>
+              <div className="status-chip ai-chip updated">
+                <span className="chip-dot blue" />
+                <span className="chip-lbl">MONITORING</span>
+                <span className="chip-val font-mono">Real-time</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Nominal Card */}
+        <div className="problem-analysis-card">
+          <div className="card-top-banner">
+            <div className="unit-info-group">
+              <div className="unit-icon-badge" style={{ background: '#ecfdf5', borderColor: '#a7f3d0' }}>
+                <ShieldCheck size={20} className="text-emerald-600" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="unit-heading-tag" style={{ color: '#065f46' }}>
+                    NO ACTIVE PROBLEM
+                  </h3>
+                  <span className="status-badge nominal">100% PLANT HEALTH</span>
+                </div>
+                <div className="unit-trigger-reason">
+                  Continuous ML monitoring is active. No condition currently requires automatic problem analysis.
+                </div>
+              </div>
+            </div>
+
+            <div className="kpi-metric-cards-group">
+              <div className="metric-box">
+                <span className="metric-title">PLANT HEALTH</span>
+                <span className="metric-number-val font-mono" style={{ color: '#16a34a' }}>100%</span>
+              </div>
+              <div className="metric-box">
+                <span className="metric-title">ACTIVE ANOMALIES</span>
+                <span className="metric-number-val font-mono" style={{ color: '#16a34a' }}>0</span>
+              </div>
+              <div className="metric-box">
+                <span className="metric-title">DIAGNOSTIC STATUS</span>
+                <span className="metric-status-val norm">ON-SPEC</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Plant Units Live Nominal Overview */}
+          <div style={{ padding: '16px 18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <Activity size={15} className="text-sky-600" />
+                  <span className="font-bold text-slate-800 text-xs">P-101 Feed Pump</span>
+                </div>
+                <span className="status-badge nominal" style={{ fontSize: '0.6rem', padding: '1px 5px' }}>100%</span>
+              </div>
+              <div className="text-[11px] text-slate-600 space-y-1 font-mono">
+                <div>Speed: 2450 RPM (Nominal)</div>
+                <div>Vibration: 0.08 g (&lt; 0.20 g limit)</div>
+                <div>Flow: 10.0 L/min (On-Spec)</div>
+              </div>
+            </div>
+
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <Flame size={15} className="text-amber-600" />
+                  <span className="font-bold text-slate-800 text-xs">E-101 Heat Exchanger</span>
+                </div>
+                <span className="status-badge nominal" style={{ fontSize: '0.6rem', padding: '1px 5px' }}>100%</span>
+              </div>
+              <div className="text-[11px] text-slate-600 space-y-1 font-mono">
+                <div>ΔT: 12.9 °C (Design)</div>
+                <div>Outlet: 38.1 °C (Nominal)</div>
+                <div>Efficiency: 95.0% (Clean)</div>
+              </div>
+            </div>
+
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <Cpu size={15} className="text-purple-600" />
+                  <span className="font-bold text-slate-800 text-xs">R-101 CSTR Reactor</span>
+                </div>
+                <span className="status-badge nominal" style={{ fontSize: '0.6rem', padding: '1px 5px' }}>100%</span>
+              </div>
+              <div className="text-[11px] text-slate-600 space-y-1 font-mono">
+                <div>Core Temp: 65.0 °C (Steady)</div>
+                <div>Pressure: 2.05 bar (Antoine Eq)</div>
+                <div>Cooling Jacket: Active</div>
+              </div>
+            </div>
+
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <Layers size={15} className="text-blue-600" />
+                  <span className="font-bold text-slate-800 text-xs">D-101 Distillation</span>
+                </div>
+                <span className="status-badge nominal" style={{ fontSize: '0.6rem', padding: '1px 5px' }}>100%</span>
+              </div>
+              <div className="text-[11px] text-slate-600 space-y-1 font-mono">
+                <div>Reflux Ratio: 1.85 (Design)</div>
+                <div>Top Temp: 76.5 °C (Steady)</div>
+                <div>Bottom Temp: 98.4 °C (Steady)</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Card Footer */}
+          <div className="analysis-card-footer" style={{ borderTop: '1px solid #e2e8f0', padding: '10px 18px', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+            <span className="footer-info-text text-xs text-slate-600">
+              ⚡ Automatic AI Problem Analysis triggers instantly upon detection of Early Degradation, High Risk, Critical Fault, or Unknown Process Anomalies.
+            </span>
+            {onManualReanalyze && (
+              <button
+                type="button"
+                className="btn-manual-reanalyze"
+                onClick={() => onManualReanalyze('pump')}
+                title="Run diagnostic evaluation on current telemetry"
+              >
+                <RotateCcw size={13} />
+                <span>EVALUATE TELEMETRY</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* History timeline if any previous events exist */}
+        {recentAnalyses.length > 0 && (
+          <div className="analysis-history-section">
+            <div className="history-header-row">
+              <div className="flex items-center gap-1.5">
+                <History size={13} className="text-blue-600" />
+                <span className="history-title">ANALYSIS HISTORY</span>
+              </div>
+              <span className="history-subtitle">Click an event to inspect historical telemetry</span>
+            </div>
+
+            <div className="history-items-grid">
+              {recentAnalyses.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="history-item-card"
+                  onClick={() => setSelectedHistoryId(item.id)}
+                  title={`Inspect analysis from ${item.timestamp} for ${item.equipmentName}`}
+                >
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="hist-time font-mono">{item.timestamp}</span>
+                    <span className={`hist-risk-badge ${item.riskScore > 50 ? 'high' : 'warn'}`}>
+                      {item.stageLabel || item.stage}
+                    </span>
+                  </div>
+                  <div className="hist-unit-tag font-bold text-slate-800">
+                    {item.equipmentTag || item.equipmentId.toUpperCase()}
+                  </div>
+                  <div className="hist-cause-snippet text-slate-600 truncate">
+                    {item.primaryHypothesis || item.whyItIsHappening || 'Process telemetry assessment'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ===========================================================================
+  // 2. ACTIVE PROBLEM OR HISTORICAL SNAPSHOT INSPECTION
+  // ===========================================================================
+  const isFailure = displayItem?.isFailureConfirmed || displayItem?.stage === 'FAULT_CONFIRMED';
+  const isUnknown = displayItem?.isUnknownFault;
+  const healthScore = displayItem?.healthScore ?? 100;
+  const riskScore = displayItem?.riskScore ?? Math.round(100 - healthScore);
+  const equipId = displayItem?.equipmentId || 'pump';
+  const confidence = displayItem?.confidence ?? 89;
+
   const followUpSuggestions = isFailure
     ? [
         `Why did ${displayItem?.equipmentTag || 'this unit'} fail?`,
@@ -122,13 +320,11 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
   return (
     <div
       className={`auto-problem-analysis-container ${
-        isFailure ? 'mode-failure' : isUnknown ? 'mode-unknown' : isNominal ? 'mode-nominal' : 'mode-degraded'
+        isFailure ? 'mode-failure' : isUnknown ? 'mode-unknown' : 'mode-degraded'
       }`}
       aria-label="Automatic AI Problem Analysis Section"
     >
-      {/* =======================================================================
-          1. DEDICATED HEADER & MULTIVARIABLE MONITORING STATUS BAR
-          ======================================================================= */}
+      {/* 1. Dedicated Header */}
       <div className="auto-section-header">
         <div className="header-left-col">
           <div className="header-title-row">
@@ -147,15 +343,11 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
                   AUTOMATIC ANALYSIS ACTIVE
                 </span>
               </div>
-              <p className="auto-main-subheading">
-                Continuous multivariable monitoring &bull; Root-cause analysis automatically triggered upon degradation.
-              </p>
             </div>
           </div>
         </div>
 
         <div className="header-right-col">
-          {/* Dual Engine Status Badges */}
           <div className="engine-status-group">
             <div className="status-chip ml-chip">
               <span className="chip-dot emerald" />
@@ -188,9 +380,7 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
         </div>
       </div>
 
-      {/* =======================================================================
-          ACTIVE PROBLEM UNITS SELECTOR TABS (If multiple degraded units exist)
-          ======================================================================= */}
+      {/* Active Problem Units Selector Tabs (If multiple degraded units exist) */}
       {activeProblemAnalyses.length > 1 && (
         <div className="active-problems-tab-strip">
           <span className="tab-strip-label">ACTIVE PROBLEM UNITS:</span>
@@ -246,11 +436,9 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
         </div>
       )}
 
-      {/* =======================================================================
-          2. ONE ANALYSIS CARD PER ACTIVE PROBLEM (Clean 2-Column Industrial Layout)
-          ======================================================================= */}
+      {/* 2. Main Problem Analysis Card */}
       <div className="problem-analysis-card">
-        {/* Card Header: Unit Tag, Name, Status, Health, Risk, Confidence */}
+        {/* Card Header */}
         <div className="card-top-banner">
           <div className="unit-info-group">
             <div className="unit-icon-badge">{getEquipmentIcon(displayItem?.equipmentId)}</div>
@@ -319,9 +507,7 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
           </div>
         </div>
 
-        {/* =======================================================================
-            3. CLEAN 2-COLUMN STRUCTURED ENGINEERING GRID
-            ======================================================================= */}
+        {/* 3. Clean 2-Column Structured Engineering Grid */}
         <div className="analysis-2col-grid">
           {/* ROW 1 - LEFT: WHAT IS HAPPENING */}
           <div className="analysis-box-sec">
@@ -425,7 +611,7 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
             </div>
           </div>
 
-          {/* ROW 2 - RIGHT: BASELINE → CURRENT DEVIATION (CLEAN HTML TABLE, ZERO LATEX) */}
+          {/* ROW 2 - RIGHT: BASELINE → CURRENT DEVIATION */}
           <div className="analysis-box-sec">
             <div className="sec-header-title">
               <Search size={14} className="text-blue-600" />
@@ -540,9 +726,7 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
           </div>
         </div>
 
-        {/* =======================================================================
-            4. ACTION FOOTER & COPILOT FOLLOW-UP BAR
-            ======================================================================= */}
+        {/* 4. Action Footer & Copilot Follow-up Bar */}
         <div className="analysis-card-footer">
           <div className="footer-left-info">
             <span className="footer-info-text">
@@ -600,9 +784,7 @@ export const AutomaticProblemAnalysisPanel: React.FC<AutomaticProblemAnalysisPan
         </div>
       </div>
 
-      {/* =======================================================================
-          5. COMPACT ANALYSIS HISTORY TIMELINE
-          ======================================================================= */}
+      {/* 5. Analysis History Timeline */}
       {recentAnalyses.length > 0 && (
         <div className="analysis-history-section">
           <div className="history-header-row">

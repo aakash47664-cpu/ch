@@ -557,40 +557,42 @@ Include:
       ? `${activeUnit.id}_${worstHealth < 40 ? 'CRIT' : worstHealth < 70 ? 'HIGH' : 'WARN'}_${currentState.active_fault_mode}_${degradedUnits.length}`
       : 'NORMAL_ALL';
 
-    // Nominal state handling
+    // Nominal state handling: No active degraded units
     if (!isSystemDegraded) {
-      if (lastSignatureRef.current !== 'NORMAL_ALL' || !currentAnalysis) {
-        const nominalItem = synthesizeDeterministicAnalysis(
-          UNIT_DEFINITIONS[0],
-          eqDiagnostics.P101,
-          currentState.equipment.pump.data,
-          currentState
-        );
-        setCurrentAnalysis(nominalItem);
-        setActiveProblemAnalyses([nominalItem]);
+      if (lastSignatureRef.current !== 'NORMAL_ALL') {
+        setCurrentAnalysis(null);
+        setActiveProblemAnalyses([]);
       }
       lastSignatureRef.current = 'NORMAL_ALL';
       return;
     }
 
-    // Debounce & cooldown checks
+    // 2. Synchronously update live deterministic analysis with ZERO delay (<1ms)
+    const updated = synthesizeDeterministicAnalysis(
+      activeUnit,
+      eqDiagnostics[activeUnit.diagKey] || eqDiagnostics[activeUnit.id],
+      currentState.equipment[activeUnit.id as keyof typeof currentState.equipment]?.data,
+      currentState
+    );
+    const multiAnalyses = degradedUnits.map((u) => {
+      const uDiag = eqDiagnostics[u.diagKey] || eqDiagnostics[u.id];
+      const uData = currentState.equipment[u.id as keyof typeof currentState.equipment]?.data as any;
+      return synthesizeDeterministicAnalysis(u, uDiag, uData, currentState);
+    });
+
+    setCurrentAnalysis((prev) => ({
+      ...updated,
+      fullExplanation: prev?.fullExplanation || updated.fullExplanation,
+      provider: prev?.provider || updated.provider
+    }));
+    setActiveProblemAnalyses(multiAnalyses.length > 0 ? multiAnalyses : [updated]);
+
+    // 3. Debounce & cooldown checks for asynchronous LLM enrichment
     const now = Date.now();
     const timeSinceLastCall = (now - lastCallTimeRef.current) / 1000;
     const isSignatureChanged = signature !== lastSignatureRef.current;
 
     if (!isSignatureChanged && timeSinceLastCall < 15) {
-      // Synchronize live deterministic metrics without re-invoking LLM
-      const updated = synthesizeDeterministicAnalysis(
-        activeUnit,
-        eqDiagnostics[activeUnit.diagKey] || eqDiagnostics[activeUnit.id],
-        currentState.equipment[activeUnit.id as keyof typeof currentState.equipment]?.data,
-        currentState
-      );
-      setCurrentAnalysis((prev) => ({
-        ...updated,
-        fullExplanation: prev?.fullExplanation || updated.fullExplanation,
-        provider: prev?.provider || updated.provider
-      }));
       return;
     }
 
@@ -600,12 +602,12 @@ Include:
       clearTimeout(pendingTimerRef.current);
     }
 
-    // Debounce 1.2s to confirm persistence
+    // Debounce 1.0s to trigger background LLM copilot enrichment
     pendingTimerRef.current = setTimeout(async () => {
       lastSignatureRef.current = signature;
       lastCallTimeRef.current = Date.now();
       await executeAnalysis(activeUnit, degradedUnits);
-    }, 1200);
+    }, 1000);
 
     return () => {
       if (pendingTimerRef.current) {

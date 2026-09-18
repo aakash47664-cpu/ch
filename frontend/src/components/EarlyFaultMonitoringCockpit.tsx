@@ -181,7 +181,7 @@ export const EarlyFaultMonitoringCockpit: React.FC<EarlyFaultMonitoringCockpitPr
           stage: currentAnalysis.stage,
           riskScore: currentAnalysis.riskScore,
           provider: currentAnalysis.provider || 'Gemini',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.6-flash',
           rawText: currentAnalysis.fullExplanation || '',
           sections: {
             whatIsHappening: currentAnalysis.whatIsHappening,

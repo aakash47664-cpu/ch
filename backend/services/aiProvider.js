@@ -4,7 +4,7 @@
  * Unifies Google Gemini and Groq Cloud Industrial AI providers behind
  * a single conversational interface with strict external provider routing:
  * 
- * When Gemini is selected -> Calls Google Gemini (gemini-2.5-flash)
+ * When Gemini is selected -> Calls Google Gemini (gemini-3.6-flash)
  * When Groq is selected   -> Calls Groq Cloud (llama-3.3-70b-versatile)
  * Failover is allowed ONLY between real external providers:
  *   Gemini -> Groq
@@ -22,7 +22,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
-import { chatWithGemini, isGeminiConfigured, getGeminiHealth, buildIndustrialSystemPrompt } from './geminiService.js';
+import { chatWithGemini, isGeminiConfigured, getGeminiHealth, isTemporaryGeminiError, buildIndustrialSystemPrompt } from './geminiService.js';
 import { chatWithGroq, isGroqConfigured, getGroqHealth } from './groqService.js';
 
 export { buildIndustrialSystemPrompt };
@@ -45,14 +45,15 @@ export function getCombinedAiHealth() {
       gemini: geminiHealth,
       groq: groqHealth
     },
+    primary: 'Gemini',
+    fallback: 'Groq',
     calculationEngine: 'ACTIVE',
     timestamp: new Date().toISOString()
   };
 }
 
 /**
- * Dispatches a chat message to the designated AI provider (Gemini or Groq)
- * with strict external failover and ZERO silent substitution with local rule engine.
+ * Dispatches a chat message with GEMINI = PRIMARY PROVIDER and GROQ = AUTOMATIC FALLBACK
  */
 export async function dispatchAiChat({
   provider = 'gemini',
@@ -74,90 +75,113 @@ export async function dispatchAiChat({
     }));
 
   const state = liveState || processContext;
-  let primaryFn = null;
-  let secondaryFn = null;
-  let primaryProviderKey = 'gemini';
-  let secondaryProviderKey = 'groq';
-  let primaryModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  let secondaryModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+  const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+  const groqModel = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
+  // 1. Explicit Groq selection by user
   if (reqProvider === 'groq') {
-    primaryProviderKey = 'groq';
-    secondaryProviderKey = 'gemini';
-    primaryModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-    secondaryModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-
-    primaryFn = isGroqConfigured()
-      ? () => chatWithGroq({ message: actualUserMessage, conversation: cleanConversation, processContext: state, liveState: state })
-      : null;
-    secondaryFn = isGeminiConfigured()
-      ? () => chatWithGemini({ message: actualUserMessage, conversation: cleanConversation, processContext: state, liveState: state })
-      : null;
-  } else {
-    // Default to Gemini
-    primaryProviderKey = 'gemini';
-    secondaryProviderKey = 'groq';
-    primaryModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    secondaryModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-
-    primaryFn = isGeminiConfigured()
-      ? () => chatWithGemini({ message: actualUserMessage, conversation: cleanConversation, processContext: state, liveState: state })
-      : null;
-    secondaryFn = isGroqConfigured()
-      ? () => chatWithGroq({ message: actualUserMessage, conversation: cleanConversation, processContext: state, liveState: state })
-      : null;
+    if (!isGroqConfigured()) {
+      const err = new Error('Groq provider is not configured in the environment');
+      err.status = 401;
+      err.provider = 'Groq';
+      throw err;
+    }
+    console.log(`[AI ROUTER] User selected Groq directly (${groqModel})...`);
+    const reply = await chatWithGroq({
+      message: actualUserMessage,
+      conversation: cleanConversation,
+      processContext: state,
+      liveState: state
+    });
+    return {
+      success: true,
+      text: reply.trim(),
+      response: reply.trim(),
+      answer: reply.trim(),
+      provider: 'Groq',
+      model: groqModel,
+      fallback: false,
+      timestamp: new Date().toISOString()
+    };
   }
 
-  let lastError = null;
+  // 2. Primary Execution: Google Gemini
+  let geminiError = null;
 
-  // 1. Execute Primary Provider (Real API)
-  if (primaryFn) {
+  if (isGeminiConfigured()) {
     try {
-      console.log(`[AI ROUTER] Invoking primary external provider: ${primaryProviderKey} (${primaryModel})...`);
-      const response = await primaryFn();
-      if (response && response.trim().length > 0) {
+      console.log(`[AI ROUTER] Calling primary provider: Gemini (${geminiModel})...`);
+      const reply = await chatWithGemini({
+        message: actualUserMessage,
+        conversation: cleanConversation,
+        processContext: state,
+        liveState: state
+      });
+
+      if (reply && reply.trim().length > 0) {
         return {
           success: true,
-          text: response.trim(),
-          response: response.trim(),
-          answer: response.trim(),
-          provider: primaryProviderKey,
-          model: primaryModel,
+          text: reply.trim(),
+          response: reply.trim(),
+          answer: reply.trim(),
+          provider: 'Gemini',
+          model: geminiModel,
+          fallback: false,
           timestamp: new Date().toISOString()
         };
       }
     } catch (err) {
-      lastError = err;
-      console.warn(`[AI ROUTER] Primary AI provider (${primaryProviderKey}) error:`, err.message);
+      geminiError = err;
+      console.warn(`[AI ROUTER] Primary Gemini call failed (${err.status || 'error'}): ${err.message}`);
     }
   } else {
-    console.warn(`[AI ROUTER] Primary AI provider (${primaryProviderKey}) is not configured.`);
+    geminiError = new Error('GEMINI_API_KEY is not configured in the environment');
+    geminiError.status = 401;
+    geminiError.isTemporary = true;
+    console.warn('[AI ROUTER] Gemini is not configured, evaluating Groq fallback...');
   }
 
-  // 2. Failover to Secondary External Provider (Gemini <-> Groq ONLY)
-  if (secondaryFn) {
+  // 3. Automatic Groq Fallback for Gemini failures
+  if (geminiError && isGroqConfigured()) {
+    console.log(`[AI ROUTER] ⚡ Gemini failure detected (${geminiError?.status || 'error'}). Automatically executing Groq fallback (${groqModel})...`);
     try {
-      console.log(`[AI ROUTER] Failing over to secondary external AI provider: ${secondaryProviderKey} (${secondaryModel})...`);
-      const response = await secondaryFn();
-      if (response && response.trim().length > 0) {
+      const groqReply = await chatWithGroq({
+        message: actualUserMessage,
+        conversation: cleanConversation,
+        processContext: state,
+        liveState: state
+      });
+
+      if (groqReply && groqReply.trim().length > 0) {
+        console.log(`[AI ROUTER] ✅ Groq fallback succeeded!`);
         return {
           success: true,
-          text: response.trim(),
-          response: response.trim(),
-          answer: response.trim(),
-          provider: secondaryProviderKey,
-          model: secondaryModel,
-          failover: true,
+          text: groqReply.trim(),
+          response: groqReply.trim(),
+          answer: groqReply.trim(),
+          provider: 'Groq',
+          model: groqModel,
+          fallback: true,
+          fallbackNotice: 'GROQ FALLBACK',
           timestamp: new Date().toISOString()
         };
       }
-    } catch (err) {
-      lastError = err;
-      console.warn(`[AI ROUTER] Secondary AI provider (${secondaryProviderKey}) error:`, err.message);
+    } catch (groqErr) {
+      console.error(`[AI ROUTER] Groq fallback also encountered an error: ${groqErr.message}`);
+      const combinedError = new Error('Both AI providers are currently unavailable');
+      combinedError.status = 503;
+      combinedError.provider = 'none';
+      throw combinedError;
     }
   }
 
-  // If external AI cannot answer, throw an informative error so user knows exact provider status
-  const errorDetail = lastError?.message || `Provider ${primaryProviderKey} is not configured or unavailable`;
-  throw new Error(`ChemDiag AI external provider failure (${primaryProviderKey}): ${errorDetail}`);
+  // 4. If Groq is not configured or error is permanent
+  if (geminiError) {
+    throw geminiError;
+  }
+
+  const unavailError = new Error('Both AI providers are currently unavailable');
+  unavailError.status = 503;
+  unavailError.provider = 'none';
+  throw unavailError;
 }

@@ -13,9 +13,10 @@ import { Navbar } from './components/Navbar';
 import { DemoModeBar } from './components/DemoModeBar';
 import { EquipmentDetailDrawer } from './components/EquipmentDetailDrawer';
 
-// 8 Dedicated Application Workspaces
 import { OverviewWorkspace } from './components/workspaces/OverviewWorkspace';
 import { ProcessFlowsheetWorkspace } from './components/workspaces/ProcessFlowsheetWorkspace';
+import { MlMonitoringWorkspace } from './components/workspaces/MlMonitoringWorkspace';
+import { IntermittentFaultsWorkspace } from './components/workspaces/IntermittentFaultsWorkspace';
 import { PumpWorkspace } from './components/workspaces/PumpWorkspace';
 import { HeatExchangerWorkspace } from './components/workspaces/HeatExchangerWorkspace';
 import { ReactorWorkspace } from './components/workspaces/ReactorWorkspace';
@@ -32,7 +33,9 @@ import {
   BrainCircuit,
   Bell,
   Atom,
-  Network
+  Network,
+  Clock,
+  Gauge
 } from 'lucide-react';
 
 const INITIAL_STATE: ProcessUpdatePayload = {
@@ -100,6 +103,8 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<
     | 'overview'
     | 'flowsheet'
+    | 'ml_monitoring'
+    | 'intermittent_faults'
     | 'pump'
     | 'heat_exchanger'
     | 'reactor'
@@ -228,9 +233,6 @@ export const App: React.FC = () => {
               ChemDiag <span className="ai-tag">AI</span>
             </span>
           </div>
-          <p className="brand-subtitle">
-            Digital Twin · Early Fault Detection · XAI · Safety Gate
-          </p>
         </div>
 
         <nav className="sidebar-nav">
@@ -253,6 +255,28 @@ export const App: React.FC = () => {
               <span>Process Flowsheet</span>
             </div>
             <span className="nav-status-dot pulse"></span>
+          </button>
+
+          <button
+            className={`nav-item ${activeTab === 'ml_monitoring' ? 'active' : ''}`}
+            onClick={() => setActiveTab('ml_monitoring')}
+          >
+            <div className="nav-item-left">
+              <Gauge />
+              <span>ML Monitoring</span>
+            </div>
+            <span className="nav-status-dot pulse"></span>
+          </button>
+
+          <button
+            className={`nav-item ${activeTab === 'intermittent_faults' ? 'active' : ''}`}
+            onClick={() => setActiveTab('intermittent_faults')}
+          >
+            <div className="nav-item-left">
+              <Clock />
+              <span>Intermittent Faults</span>
+            </div>
+            <span className={`nav-status-dot ${(state.intermittent_faults?.active_events_count || 0) > 0 ? 'critical' : 'ai-pulse'}`}></span>
           </button>
 
           <button
@@ -406,7 +430,30 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* PAGE 3: PUMP P-101 */}
+          {/* PAGE 3: ML MONITORING */}
+          {activeTab === 'ml_monitoring' && (
+            <div className="tab-content-anim">
+              <MlMonitoringWorkspace
+                state={state}
+                initialEquipmentId={selectedEquipment || 'heat_exchanger'}
+                onNavigateTab={setActiveTab}
+                onAskAiAbout={handleAskAiAboutEquipment}
+              />
+            </div>
+          )}
+
+          {/* PAGE 4: INTERMITTENT FAULTS (COMPLETELY SEPARATE WORKSPACE) */}
+          {activeTab === 'intermittent_faults' && (
+            <div className="tab-content-anim">
+              <IntermittentFaultsWorkspace
+                state={state}
+                onNavigateTab={setActiveTab}
+                onAskAiAbout={handleAskAiAboutEquipment}
+              />
+            </div>
+          )}
+
+          {/* PAGE 5: PUMP P-101 */}
           {activeTab === 'pump' && (
             <div className="tab-content-anim">
               <PumpWorkspace

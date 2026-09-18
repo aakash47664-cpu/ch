@@ -93,7 +93,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
     console.log("CHEMDIAG USER MESSAGE:", text);
 
     const userMsg: ChatMessage = {
-      id: `usr-${Date.now()}`,
+      id: `usr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       sender: 'user',
       text,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -102,8 +102,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
 
     // Keep prior conversation history separate from the new user message
     const priorHistory = [...messages];
-    const newHistory = [...messages, userMsg];
-    setMessages(newHistory);
+    setMessages((prev) => [...prev, userMsg]);
     setInputValue('');
     setIsLoading(true);
 
@@ -117,26 +116,42 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
       );
       const replyText = response.text || response.response || response.answer || "Operating nominally within design tolerances.";
       const aiMsg: ChatMessage = {
-        id: `ai-${Date.now()}`,
+        id: `ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         sender: 'ai',
         text: replyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         equipment: response.equipment,
-        provider: response.provider || selectedProvider
+        provider: response.provider || selectedProvider,
+        fallback: !!response.fallback,
+        fallbackNotice: response.fallbackNotice || (response.fallback ? 'GROQ FALLBACK' : undefined)
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (err: any) {
       console.error('Chat error:', err);
+      let errorText = err?.message || 'Both AI providers are currently unavailable. ML/XAI monitoring remains active.';
+
+      if (typeof errorText === 'string' && errorText.startsWith('{') && errorText.endsWith('}')) {
+        try {
+          const parsed = JSON.parse(errorText);
+          errorText = parsed.error || parsed.message || 'Both AI providers are currently unavailable. ML/XAI monitoring remains active.';
+        } catch {
+          errorText = 'Both AI providers are currently unavailable. ML/XAI monitoring remains active.';
+        }
+      }
+
       const errorMsg: ChatMessage = {
-        id: `err-${Date.now()}`,
+        id: `err-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         sender: 'ai',
-        text: `⚠️ **AI Assistant Temporary Notice**: The ${selectedProvider === 'gemini' ? 'Google Gemini' : 'Groq'} endpoint is currently reconnecting (${err.message || 'Connection timeout'}).\n\n*Note: Continuous ML monitoring (Isolation Forest & Random Forest) remains 100% active and evaluating live telemetry.* Please try your query again or switch providers.`,
+        text: errorText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        provider: 'System Diagnostics'
+        provider: 'System Notice'
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsLoading(false);
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
     }
   };
 
@@ -149,7 +164,12 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
 
   const handleClearChat = () => {
     setMessages(INITIAL_MESSAGES);
+    setInputValue('');
+    setIsLoading(false);
     if (onClearSelectedEquipment) onClearSelectedEquipment();
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 50);
   };
 
   const getPlaceholderText = () => {
@@ -193,19 +213,32 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
               title="Select AI Reasoning Engine"
               aria-label="Select AI Reasoning Engine"
             >
-              <option value="gemini">Google Gemini (2.5 Flash)</option>
-              <option value="groq">Groq Cloud (Llama 3.3)</option>
+              <option value="gemini">Google Gemini 3.6 Flash</option>
+              <option value="groq">Groq GPT-OSS 120B</option>
             </select>
           </div>
 
           {/* AI Online Status Badge */}
-          <div
-            className="provider-badge rule"
-            title={`ChemDiag AI is active with ${selectedProvider === 'gemini' ? 'Google Gemini 2.5 Flash' : 'Groq Llama 3.3 70B'}`}
-          >
-            <span className="copilot-online-dot">●</span>
-            <span>{selectedProvider === 'gemini' ? 'GEMINI 2.5 FLASH' : 'GROQ LLAMA 3.3'}</span>
-          </div>
+          {(() => {
+            const isConfigured = selectedProvider === 'gemini'
+              ? (healthStatus?.providers?.gemini?.configured ?? healthStatus?.configured ?? true)
+              : (healthStatus?.providers?.groq?.configured ?? false);
+            const statusText = selectedProvider === 'gemini'
+              ? (healthStatus?.providers?.gemini?.status || (isConfigured ? 'ONLINE' : 'UNCONFIGURED'))
+              : (healthStatus?.providers?.groq?.status || (isConfigured ? 'ONLINE' : 'UNCONFIGURED'));
+            const isOnline = statusText === 'ONLINE';
+
+            return (
+              <div
+                className={`provider-badge ${isOnline ? 'online' : 'offline'}`}
+                title={`ChemDiag AI Engine: ${selectedProvider === 'gemini' ? 'Google Gemini 3.6 Flash' : 'Groq GPT-OSS 120B'} (${statusText})`}
+              >
+                <span className={`copilot-online-dot ${isOnline ? 'dot-green' : 'dot-amber'}`}>●</span>
+                <span>{selectedProvider === 'gemini' ? 'GEMINI 3.6 FLASH' : 'GROQ GPT-OSS 120B'}</span>
+                <span className="status-label-badge font-mono text-[10px] uppercase font-bold ml-1">{statusText}</span>
+              </div>
+            );
+          })()}
 
           <button
             className="clear-chat-btn"
@@ -260,8 +293,12 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
               <div className="message-sender-name">
                 <span>{msg.sender === 'user' ? 'Operator' : 'ChemDiag Industrial AI'}</span>
                 {msg.sender === 'ai' && (
-                  <span className="message-provider-tag">
-                    {msg.provider?.toLowerCase() === 'groq' ? 'GROQ LLAMA 3.3' : 'GEMINI 2.5 FLASH'}
+                  <span className={`message-provider-tag ${msg.fallback ? 'tag-fallback' : ''}`}>
+                    {msg.fallback
+                      ? 'GROQ FALLBACK'
+                      : (msg.provider?.toLowerCase() === 'groq'
+                          ? 'GROQ GPT-OSS 120B'
+                          : 'GEMINI 3.6 FLASH')}
                   </span>
                 )}
                 <span className="message-timestamp">{msg.timestamp}</span>
@@ -281,7 +318,7 @@ export const AiChatPanel: React.FC<AiChatPanelProps> = ({
             <div className="message-bubble loading-bubble">
               <span className="typing-dots"></span>
               <span className="analyzing-text">
-                {selectedProvider === 'gemini' ? 'Google Gemini 2.5 Flash' : 'Groq Industrial AI'} is analyzing engineering principles...
+                {selectedProvider === 'gemini' ? 'Google Gemini 3.6 Flash' : 'Groq Industrial AI'} is analyzing engineering principles...
               </span>
             </div>
           </div>

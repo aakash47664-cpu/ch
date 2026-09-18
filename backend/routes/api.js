@@ -20,11 +20,15 @@ import {
   updateMaintenanceStatus,
   getMaintenanceRecords,
   recordProcessHistory,
-  getProcessHistory
+  getProcessHistory,
+  getIntermittentFaultEvents,
+  getIntermittentFaultEventById,
+  getIntermittentFaultStats,
+  clearIntermittentFaultEvents
 } from '../database/db.js';
 import { processAiChat } from '../ai/aiChatEngine.js';
 import { getGroqHealth, chatWithGroq, isGroqConfigured } from '../services/groqService.js';
-import { getGeminiHealth, chatWithGemini, isGeminiConfigured } from '../services/geminiService.js';
+import { getGeminiHealth, chatWithGemini, isGeminiConfigured, sanitizeErrorMessage } from '../services/geminiService.js';
 import { getCombinedAiHealth, dispatchAiChat } from '../services/aiProvider.js';
 import * as WhatIf from '../engineering/whatIf.js';
 
@@ -38,6 +42,7 @@ export function createApiRouter({
   getLatestEarlyFaultAssessment,
   getEquipmentDiagnostics,
   continuousMlMonitor,
+  intermittentFaultDetector,
   setOperatorApprovedState
 }) {
   const router = express.Router();
@@ -133,6 +138,108 @@ export function createApiRouter({
         what_changed: assessment?.what_changed || [],
         process_health: assessment?.process_health || {}
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // =========================================================================
+  // 0d. Intermittent & Transient Fault Engine Endpoints (Independent Feature)
+  // =========================================================================
+  router.get('/intermittent-faults/state', (req, res) => {
+    try {
+      if (!intermittentFaultDetector) {
+        return res.status(503).json({ error: 'Intermittent fault detector not initialized' });
+      }
+      res.json({
+        success: true,
+        ...intermittentFaultDetector.getState()
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/intermittent-faults/events', async (req, res) => {
+    try {
+      const { equipment, pattern, status, limit = 50 } = req.query;
+      const events = await getIntermittentFaultEvents({
+        equipmentId: equipment || null,
+        pattern: pattern || null,
+        status: status || null,
+        limit: parseInt(limit, 10) || 50
+      });
+
+      res.json({
+        success: true,
+        count: events.length,
+        events
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/intermittent-faults/events/:eventId', async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const event = await getIntermittentFaultEventById(eventId);
+      if (!event) {
+        return res.status(404).json({ error: `Event '${eventId}' not found` });
+      }
+
+      res.json({
+        success: true,
+        event
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/intermittent-faults/stats', async (req, res) => {
+    try {
+      const stats = await getIntermittentFaultStats();
+      const liveState = intermittentFaultDetector ? intermittentFaultDetector.getState() : null;
+      
+      res.json({
+        success: true,
+        stats,
+        live: liveState ? {
+          active_events: liveState.active_events,
+          active_events_count: liveState.active_events_count,
+          overall_pattern: liveState.recurrence_stats?.overall_pattern || 'NORMAL'
+        } : null
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/intermittent-faults/trigger-pulse', (req, res) => {
+    try {
+      if (!intermittentFaultDetector) {
+        return res.status(503).json({ error: 'Intermittent fault detector not initialized' });
+      }
+      const { equipment = 'pump', duration_seconds = 5 } = req.body || {};
+      const result = intermittentFaultDetector.triggerTestPulse(equipment, duration_seconds);
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/intermittent-faults/clear', async (req, res) => {
+    try {
+      if (intermittentFaultDetector) {
+        await intermittentFaultDetector.clearHistory();
+      } else {
+        await clearIntermittentFaultEvents();
+      }
+      res.json({ success: true, message: 'Intermittent fault event history cleared' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -759,6 +866,85 @@ export function createApiRouter({
     }
   });
 
+  // ----------------------------------------------------
+  // 7m. Independent Intermittent & Transient Fault Monitor Endpoints
+  // ----------------------------------------------------
+  router.get('/intermittent-faults/state', (req, res) => {
+    try {
+      if (intermittentFaultDetector && typeof intermittentFaultDetector.getState === 'function') {
+        return res.json(intermittentFaultDetector.getState());
+      }
+      res.json({ status: 'INTERMITTENT_DETECTOR_OFFLINE', active_events_count: 0, active_events: [], recent_events: [] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/intermittent-faults/events', async (req, res) => {
+    try {
+      const equipmentId = req.query.equipment || req.query.equipment_id || null;
+      const pattern = req.query.pattern || null;
+      const status = req.query.status || null;
+      const limit = parseInt(req.query.limit, 10) || 50;
+
+      const events = await getIntermittentFaultEvents({ equipmentId, pattern, status, limit });
+      res.json({
+        success: true,
+        count: (events || []).length,
+        events: events || []
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/intermittent-faults/events/:eventId', async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const event = await getIntermittentFaultEventById(eventId);
+      if (!event) {
+        return res.status(404).json({ error: `Intermittent fault event '${eventId}' not found.` });
+      }
+      res.json({ success: true, event });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/intermittent-faults/stats', async (req, res) => {
+    try {
+      const stats = await getIntermittentFaultStats();
+      res.json({ success: true, stats });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/intermittent-faults/trigger-pulse', (req, res) => {
+    try {
+      const { equipment = 'pump', duration = 5, mode = 'single_spike' } = req.body || {};
+      if (intermittentFaultDetector && typeof intermittentFaultDetector.triggerTestPulse === 'function') {
+        const result = intermittentFaultDetector.triggerTestPulse(equipment, mode || duration);
+        return res.json({ success: true, result });
+      }
+      res.status(503).json({ error: 'Intermittent Fault Detector not available.' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/intermittent-faults/clear', async (req, res) => {
+    try {
+      if (intermittentFaultDetector && typeof intermittentFaultDetector.clearHistory === 'function') {
+        await intermittentFaultDetector.clearHistory();
+      } else {
+        await clearIntermittentFaultEvents();
+      }
+      res.json({ success: true, message: 'Intermittent fault events and recurrence history reset.' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // 7n. Adjustable Process Workflow Endpoints
   router.get('/workflow', (req, res) => {
@@ -1319,11 +1505,16 @@ export function createApiRouter({
       return res.json(chatResult);
     } catch (err) {
       console.error('Error in /api/ai/chat:', err);
-      res.status(500).json({
+      const sanitizedError = sanitizeErrorMessage(err.message || 'Industrial AI service is temporarily unavailable.');
+      const status = (err.status && err.status >= 400 && err.status < 600) ? err.status : 500;
+      return res.status(status).json({
         success: false,
-        error: 'Industrial AI service is temporarily unavailable.',
-        response: 'Industrial AI service is temporarily unavailable. Please verify network connectivity.',
-        answer: 'Industrial AI service is temporarily unavailable. Please verify network connectivity.'
+        provider: err.provider || (req.body?.provider === 'groq' ? 'Groq' : 'Gemini'),
+        model: err.model || process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+        error: sanitizedError,
+        status: status,
+        response: sanitizedError,
+        answer: sanitizedError
       });
     }
   });

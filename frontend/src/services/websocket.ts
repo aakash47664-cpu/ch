@@ -2,6 +2,29 @@ import { ProcessUpdatePayload } from '../types';
 
 type MessageCallback = (data: ProcessUpdatePayload) => void;
 
+export const getWebSocketUrl = (): string => {
+  // 1. Explicit VITE_WS_URL from environment
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL.trim();
+  }
+
+  // 2. Derive from VITE_API_URL if configured
+  if (import.meta.env.VITE_API_URL) {
+    const apiUrl = import.meta.env.VITE_API_URL.trim().replace(/\/api\/?$/, '');
+    const wsBase = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
+    return `${wsBase}/ws`;
+  }
+
+  // 3. In browser dev mode (e.g. port 5173), connect directly to localhost:8000
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.port === '5173' ? 'localhost:8000' : window.location.host;
+    return `${protocol}//${host}/ws`;
+  }
+
+  return 'ws://localhost:8000/ws';
+};
+
 class WebSocketClient {
   private socket: WebSocket | null = null;
   private subscribers: Set<MessageCallback> = new Set();
@@ -19,10 +42,7 @@ class WebSocketClient {
     }
 
     this.isConnecting = true;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // If running under vite dev server, proxy /ws or connect to localhost:8000
-    const host = window.location.port === '5173' ? 'localhost:8000' : window.location.host;
-    const wsUrl = `${protocol}//${host}/ws`;
+    const wsUrl = getWebSocketUrl();
 
     try {
       this.socket = new WebSocket(wsUrl);

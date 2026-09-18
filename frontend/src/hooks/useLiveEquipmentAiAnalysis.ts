@@ -347,7 +347,7 @@ export function useLiveEquipmentAiAnalysis(state: ProcessUpdatePayload) {
           stage: currentState.equipment_health?.[equipmentId as keyof typeof currentState.equipment_health]?.stage ?? 'NORMAL',
           riskScore: currentState.diagnosis.preventive?.riskScore ?? 15,
           provider: response.provider || 'Gemini',
-          model: (response as any).model || 'gemini-2.5-flash',
+          model: (response as any).model || 'gemini-3.6-flash',
           rawText,
           sections
         };

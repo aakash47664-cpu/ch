@@ -64,9 +64,6 @@ export const AlertsWorkspace: React.FC<AlertsWorkspaceProps> = ({
                 {(state.active_alerts || []).length > 0 ? `${(state.active_alerts || []).length} ACTIVE` : 'ALL NOMINAL'}
               </span>
             </div>
-            <p className="workspace-subtitle">
-              Multi-tier intelligent alert prioritization &bull; Sensor boundary monitoring &bull; Real-time acknowledgment &bull; Click any alert to open equipment workspace
-            </p>
           </div>
         </div>
       </div>

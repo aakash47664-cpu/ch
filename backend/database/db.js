@@ -196,10 +196,45 @@ export function initDb() {
           dist_pressure REAL,
           dist_reflux_ratio REAL
         )
-      `, (err) => {
-        if (err) return reject(err);
-        resolve();
-      });
+      `);
+
+      // 10. Intermittent & Transient Fault Events
+      db.run(`
+        CREATE TABLE IF NOT EXISTS intermittent_fault_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id TEXT UNIQUE NOT NULL,
+          equipment_id TEXT NOT NULL,
+          start_time TEXT NOT NULL,
+          end_time TEXT,
+          duration REAL DEFAULT 0,
+          severity TEXT NOT NULL,
+          pattern TEXT NOT NULL,
+          event_type TEXT,
+          variables TEXT NOT NULL,
+          values_json TEXT NOT NULL,
+          baseline_json TEXT NOT NULL,
+          deviation_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          observation TEXT,
+          interpretation TEXT,
+          time_since_previous REAL,
+          recurrence_count INTEGER DEFAULT 1,
+          average_interval REAL,
+          average_duration REAL,
+          snapshot_history TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_ife_equip ON intermittent_fault_events(equipment_id)`, () => {});
+      db.run(`CREATE INDEX IF NOT EXISTS idx_ife_start ON intermittent_fault_events(start_time)`, () => {});
+      db.run(`CREATE INDEX IF NOT EXISTS idx_ife_event_id ON intermittent_fault_events(event_id)`, () => {});
+
+      const extraIfCols = ['event_type TEXT', 'time_since_previous REAL', 'recurrence_count INTEGER', 'average_interval REAL', 'average_duration REAL'];
+      for (const col of extraIfCols) {
+        db.run(`ALTER TABLE intermittent_fault_events ADD COLUMN ${col}`, () => {});
+      }
+      resolve();
     });
   });
 }
@@ -850,3 +885,272 @@ export function getProcessHistory(limit = 60) {
     });
   });
 }
+
+// ----------------------------------------------------
+// 10. Intermittent & Transient Fault Event Storage
+// ----------------------------------------------------
+export function recordIntermittentFaultEvent(event) {
+  return new Promise((resolve, reject) => {
+    const now = new Date().toISOString();
+    const query = `
+      INSERT OR REPLACE INTO intermittent_fault_events (
+        event_id, equipment_id, start_time, end_time, duration, severity,
+        pattern, event_type, variables, values_json, baseline_json, deviation_json,
+        status, observation, interpretation, time_since_previous, recurrence_count,
+        average_interval, average_duration, snapshot_history, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    db.run(
+      query,
+      [
+        event.event_id,
+        event.equipment_id,
+        event.start_time || now,
+        event.end_time || null,
+        Number(event.duration || 0),
+        event.severity || 'LOW',
+        event.pattern || 'NON-REPEATABLE',
+        event.event_type || event.pattern || 'NON-REPEATABLE',
+        typeof event.variables === 'string' ? event.variables : JSON.stringify(event.variables || []),
+        typeof event.values === 'string' ? event.values : JSON.stringify(event.values || {}),
+        typeof event.baseline === 'string' ? event.baseline : JSON.stringify(event.baseline || {}),
+        typeof event.deviation === 'string' ? event.deviation : JSON.stringify(event.deviation || {}),
+        event.status || 'EVENT ACTIVE',
+        event.observation || '',
+        event.interpretation || '',
+        typeof event.time_since_previous === 'number' ? event.time_since_previous : null,
+        typeof event.recurrence_count === 'number' ? event.recurrence_count : 1,
+        typeof event.average_interval === 'number' ? event.average_interval : null,
+        typeof event.average_duration === 'number' ? event.average_duration : null,
+        typeof event.snapshot_history === 'string' ? event.snapshot_history : JSON.stringify(event.snapshot_history || []),
+        event.created_at || now,
+        now
+      ],
+      function (err) {
+        if (err) return reject(err);
+        resolve({ id: this.lastID, event_id: event.event_id });
+      }
+    );
+  });
+}
+
+export function updateIntermittentFaultEvent(eventId, updates) {
+  return new Promise((resolve, reject) => {
+    const now = new Date().toISOString();
+    const query = `
+      UPDATE intermittent_fault_events SET
+        end_time = COALESCE(?, end_time),
+        duration = COALESCE(?, duration),
+        severity = COALESCE(?, severity),
+        pattern = COALESCE(?, pattern),
+        event_type = COALESCE(?, event_type),
+        status = COALESCE(?, status),
+        observation = COALESCE(?, observation),
+        interpretation = COALESCE(?, interpretation),
+        time_since_previous = COALESCE(?, time_since_previous),
+        recurrence_count = COALESCE(?, recurrence_count),
+        average_interval = COALESCE(?, average_interval),
+        average_duration = COALESCE(?, average_duration),
+        values_json = COALESCE(?, values_json),
+        deviation_json = COALESCE(?, deviation_json),
+        snapshot_history = COALESCE(?, snapshot_history),
+        updated_at = ?
+      WHERE event_id = ?
+    `;
+
+    db.run(
+      query,
+      [
+        updates.end_time || null,
+        typeof updates.duration === 'number' ? updates.duration : null,
+        updates.severity || null,
+        updates.pattern || null,
+        updates.event_type || updates.pattern || null,
+        updates.status || null,
+        updates.observation || null,
+        updates.interpretation || null,
+        typeof updates.time_since_previous === 'number' ? updates.time_since_previous : null,
+        typeof updates.recurrence_count === 'number' ? updates.recurrence_count : null,
+        typeof updates.average_interval === 'number' ? updates.average_interval : null,
+        typeof updates.average_duration === 'number' ? updates.average_duration : null,
+        updates.values ? (typeof updates.values === 'string' ? updates.values : JSON.stringify(updates.values)) : null,
+        updates.deviation ? (typeof updates.deviation === 'string' ? updates.deviation : JSON.stringify(updates.deviation)) : null,
+        updates.snapshot_history ? (typeof updates.snapshot_history === 'string' ? updates.snapshot_history : JSON.stringify(updates.snapshot_history)) : null,
+        now,
+        eventId
+      ],
+      function (err) {
+        if (err) return reject(err);
+        resolve({ event_id: eventId, updated: this.changes });
+      }
+    );
+  });
+}
+
+export function getIntermittentFaultEvents({ equipmentId = null, pattern = null, status = null, limit = 100 } = {}) {
+  return new Promise((resolve, reject) => {
+    let query = `SELECT * FROM intermittent_fault_events WHERE 1=1`;
+    const params = [];
+
+    if (equipmentId && equipmentId !== 'ALL') {
+      query += ` AND (equipment_id = ? OR equipment_id = ?)`;
+      params.push(equipmentId, equipmentId.replace(/-/g, ''));
+    }
+
+    if (pattern && pattern !== 'ALL') {
+      query += ` AND (pattern = ? OR event_type = ?)`;
+      params.push(pattern, pattern);
+    }
+
+    if (status && status !== 'ALL') {
+      query += ` AND status = ?`;
+      params.push(status);
+    }
+
+    query += ` ORDER BY id DESC LIMIT ?`;
+    params.push(limit);
+
+    db.all(query, params, (err, rows) => {
+      if (err) return reject(err);
+      const parsed = (rows || []).map(r => ({
+        id: r.id,
+        event_id: r.event_id,
+        equipment_id: r.equipment_id,
+        start_time: r.start_time,
+        end_time: r.end_time,
+        duration: r.duration,
+        severity: r.severity,
+        pattern: r.pattern || r.event_type || 'NON-REPEATABLE',
+        event_type: r.event_type || r.pattern || 'NON-REPEATABLE',
+        variables: (() => { try { return JSON.parse(r.variables); } catch { return []; } })(),
+        values: (() => { try { return JSON.parse(r.values_json); } catch { return {}; } })(),
+        baseline: (() => { try { return JSON.parse(r.baseline_json); } catch { return {}; } })(),
+        deviation: (() => { try { return JSON.parse(r.deviation_json); } catch { return {}; } })(),
+        status: r.status,
+        observation: r.observation,
+        interpretation: r.interpretation,
+        time_since_previous: r.time_since_previous,
+        recurrence_count: r.recurrence_count || 1,
+        average_interval: r.average_interval,
+        average_duration: r.average_duration || r.duration,
+        snapshot_history: (() => { try { return JSON.parse(r.snapshot_history); } catch { return []; } })(),
+        created_at: r.created_at,
+        updated_at: r.updated_at
+      }));
+      resolve(parsed);
+    });
+  });
+}
+
+export function getIntermittentFaultEventById(eventId) {
+  return new Promise((resolve, reject) => {
+    db.get(`SELECT * FROM intermittent_fault_events WHERE event_id = ?`, [eventId], (err, row) => {
+      if (err) return reject(err);
+      if (!row) return resolve(null);
+      resolve({
+        id: row.id,
+        event_id: row.event_id,
+        equipment_id: row.equipment_id,
+        start_time: row.start_time,
+        end_time: row.end_time,
+        duration: row.duration,
+        severity: row.severity,
+        pattern: row.pattern || row.event_type || 'NON-REPEATABLE',
+        event_type: row.event_type || row.pattern || 'NON-REPEATABLE',
+        variables: (() => { try { return JSON.parse(row.variables); } catch { return []; } })(),
+        values: (() => { try { return JSON.parse(row.values_json); } catch { return {}; } })(),
+        baseline: (() => { try { return JSON.parse(row.baseline_json); } catch { return {}; } })(),
+        deviation: (() => { try { return JSON.parse(row.deviation_json); } catch { return {}; } })(),
+        status: row.status,
+        observation: row.observation,
+        interpretation: row.interpretation,
+        time_since_previous: row.time_since_previous,
+        recurrence_count: row.recurrence_count || 1,
+        average_interval: row.average_interval,
+        average_duration: row.average_duration || row.duration,
+        snapshot_history: (() => { try { return JSON.parse(row.snapshot_history); } catch { return []; } })(),
+        created_at: row.created_at,
+        updated_at: row.updated_at
+      });
+    });
+  });
+}
+
+export function getIntermittentFaultStats() {
+  return new Promise((resolve, reject) => {
+    const query = `
+      SELECT 
+        COUNT(*) as total_events,
+        COUNT(CASE WHEN status = 'EVENT ACTIVE' THEN 1 END) as active_events,
+        COUNT(CASE WHEN pattern = 'NON-REPEATABLE' OR event_type = 'NON-REPEATABLE' THEN 1 END) as non_repeatable_events,
+        COUNT(CASE WHEN pattern = 'ISOLATED' OR pattern = 'ISOLATED TRANSIENT' OR event_type = 'ISOLATED' OR event_type = 'ISOLATED TRANSIENT' THEN 1 END) as isolated_events,
+        COUNT(CASE WHEN pattern = 'SPORADIC' OR event_type = 'SPORADIC' THEN 1 END) as sporadic_events,
+        COUNT(CASE WHEN pattern = 'INTERMITTENT' OR event_type = 'INTERMITTENT' THEN 1 END) as intermittent_events,
+        COUNT(CASE WHEN pattern = 'RECURRENT' OR event_type = 'RECURRENT' THEN 1 END) as recurrent_events,
+        COUNT(CASE WHEN pattern = 'PERSISTENT' OR event_type = 'PERSISTENT' THEN 1 END) as persistent_events,
+        AVG(CASE WHEN duration > 0 THEN duration END) as avg_duration,
+        MIN(CASE WHEN duration > 0 THEN duration END) as min_duration,
+        MAX(CASE WHEN duration > 0 THEN duration END) as max_duration,
+        AVG(CASE WHEN time_since_previous > 0 THEN time_since_previous END) as avg_interval,
+        MAX(start_time) as last_event_time,
+        MIN(start_time) as first_event_time
+      FROM intermittent_fault_events
+    `;
+    db.get(query, [], (err, row) => {
+      if (err) return reject(err);
+      
+      db.all(`
+        SELECT 
+          equipment_id,
+          COUNT(*) as count,
+          AVG(duration) as avg_duration,
+          AVG(time_since_previous) as avg_interval,
+          MAX(start_time) as last_seen
+        FROM intermittent_fault_events
+        GROUP BY equipment_id
+      `, [], (err2, equipRows) => {
+        if (err2) return reject(err2);
+        
+        const byEquipment = {};
+        (equipRows || []).forEach(er => {
+          byEquipment[er.equipment_id] = {
+            count: er.count,
+            avg_duration: Number((er.avg_duration || 0).toFixed(1)),
+            avg_interval: er.avg_interval ? Number(er.avg_interval.toFixed(1)) : null,
+            last_seen: er.last_seen
+          };
+        });
+
+        resolve({
+          total_events: row?.total_events || 0,
+          active_events: row?.active_events || 0,
+          non_repeatable_events: row?.non_repeatable_events || 0,
+          isolated_events: row?.isolated_events || 0,
+          sporadic_events: row?.sporadic_events || 0,
+          intermittent_events: row?.intermittent_events || 0,
+          recurrent_events: row?.recurrent_events || 0,
+          persistent_events: row?.persistent_events || 0,
+          avg_duration: Number((row?.avg_duration || 0).toFixed(1)),
+          min_duration: Number((row?.min_duration || 0).toFixed(1)),
+          max_duration: Number((row?.max_duration || 0).toFixed(1)),
+          avg_interval: row?.avg_interval ? Number(row.avg_interval.toFixed(1)) : null,
+          last_event_time: row?.last_event_time || null,
+          first_event_time: row?.first_event_time || null,
+          by_equipment: byEquipment
+        });
+      });
+    });
+  });
+}
+
+export function clearIntermittentFaultEvents() {
+  return new Promise((resolve, reject) => {
+    db.run(`DELETE FROM intermittent_fault_events`, function (err) {
+      if (err) return reject(err);
+      resolve({ cleared: this.changes });
+    });
+  });
+}
+
+

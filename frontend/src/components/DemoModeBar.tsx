@@ -49,12 +49,7 @@ export const DemoModeBar: React.FC<DemoModeBarProps> = ({
         <div className="demo-bar-icon-wrap" title="Interactive Demonstration Controls">
           <PlayCircle size={16} />
         </div>
-        <div>
-          <div className="demo-title-text">DEMONSTRATION SCENARIO CONTROLS (4 EVALUATION LEVELS)</div>
-          <div className="demo-subtitle">
-            Manipulate live Digital Twin conditions to evaluate Early Detection, XAI Root Cause, Prognosis & Unknown Fault Safety Gating
-          </div>
-        </div>
+        <div className="demo-title-text">DEMONSTRATION SCENARIO CONTROLS (4 EVALUATION LEVELS)</div>
       </div>
 
       {/* Button Rows Grouped by Level */}

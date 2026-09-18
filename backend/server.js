@@ -19,6 +19,7 @@ import { diagnoseProcessState } from './ai/rootCauseEngine.js';
 import { ProcessSimulator } from './simulator/processSimulator.js';
 import { EarlyFaultEngine } from './engineering/earlyFaultEngine.js';
 import { ContinuousMlMonitor } from './ai/continuousMlMonitor.js';
+import { IntermittentFaultDetector } from './engineering/intermittentFaultDetector.js';
 import { createApiRouter } from './routes/api.js';
 
 dotenv.config();
@@ -72,6 +73,7 @@ randomForest.fit(syntheticData, FEATURE_NAMES, CLASSES);
 const simulator = new ProcessSimulator();
 const earlyFaultEngine = new EarlyFaultEngine();
 const continuousMlMonitor = new ContinuousMlMonitor();
+const intermittentFaultDetector = new IntermittentFaultDetector();
 
 // Initial baseline telemetry for early fault engine
 let latestEarlyFaultAssessment = earlyFaultEngine.processTelemetry({
@@ -152,6 +154,7 @@ app.use('/api', createApiRouter({
   getLatestEarlyFaultAssessment,
   getEquipmentDiagnostics,
   continuousMlMonitor,
+  intermittentFaultDetector,
   setOperatorApprovedState
 }));
 
@@ -312,7 +315,9 @@ function buildBroadcastPayload() {
     watch_list: latestEarlyFaultAssessment.watch_list,
     causal_propagation: latestEarlyFaultAssessment.causal_propagation,
     timeline_events: latestEarlyFaultAssessment.timeline_events,
-    all_metrics: latestEarlyFaultAssessment.all_metrics
+    all_metrics: latestEarlyFaultAssessment.all_metrics,
+    // INDEPENDENT TEMPORAL INTERMITTENT & TRANSIENT FAULT STATE
+    intermittent_faults: intermittentFaultDetector.getState()
   };
 }
 
@@ -392,6 +397,9 @@ setInterval(async () => {
 
     // 2b. Compute Continuous Early-Fault & Process Health Assessment
     latestEarlyFaultAssessment = earlyFaultEngine.processTelemetry(telemetryVector, activeFault);
+
+    // 2c. Execute Temporal Intermittent & Transient Fault Detection Engine
+    intermittentFaultDetector.processTick(telemetryVector, simState, activeFault);
 
     // Features for ML models
     const mlSample = {
